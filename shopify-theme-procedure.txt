@@ -1,0 +1,107 @@
+Работеща процедура за промени по Shopify тема (пример: test-avalon.myshopify.com)
+
+1) Папка за проекта
+   - Създай папка за магазина (напр. test-avalon/)
+   - Влез в папката
+
+2) Login (админ акаунт или Partner access с Themes права)
+   shopify auth login
+
+3) Намиране на Theme ID
+   shopify theme list -s test-avalon.myshopify.com
+
+4) Изтегляне на темата локално (pull)
+   shopify theme pull -s test-avalon.myshopify.com --theme <THEME_ID>
+
+5) Локални промени
+   - Добави/обнови Theme settings (config/settings_schema.json)
+   {
+    "name": "Банка ДСК покупки на Кредит",
+    "settings": [
+       {
+         "type": "checkbox",
+         "id": "dskapi_status",
+         "label": "DSK Credit API покупки на Кредит",
+         "info": "Дава възможност на Вашите клиенти да закупуват стока на изплащане с DSK Credit API.",
+         "default": true
+       },
+       {
+         "type": "text",
+         "id": "dskapi_cid",
+         "label": "Уникален идентификатор на магазина",
+         "info": "Уникален идентификатор на магазина в системата на DSK Credit API. Ако не е попълнен, бутонът няма да се показва."
+       },
+       {
+         "type": "text",
+         "id": "dskapi_btn_text",
+         "label": "Текст на бутона",
+         "default": "Купи на кредит от"
+       },
+       {
+         "type": "range",
+         "id": "dskapi_btn_max_width",
+         "min": 200,
+         "max": 1100,
+        "step": 10,
+         "unit": "px",
+         "label": "Максимална ширина на бутона",
+         "info": "Максимална ширина на блока с бутона.",
+         "default": 570
+       },
+       {
+         "type": "range",
+         "id": "dskapi_btn_height",
+         "min": 20,
+         "max": 120,
+         "step": 1,
+         "unit": "px",
+         "label": "Височина на бутона",
+         "default": 52
+       },
+       {
+         "type": "range",
+         "id": "dskapi_btn_round",
+         "min": 0,
+         "max": 60,
+         "step": 1,
+         "unit": "px",
+         "label": "Закръгляне на ъглите на бутона",
+         "default": 14
+       }
+    ]
+  }
+   - Добави snippet-а, snippets/dsk-product-button.liquid
+
+6) Dev preview (hot reload без push)
+   shopify theme dev -s test-avalon.myshopify.com
+   - Отвори URL-то, което CLI показва (обикновено localhost / 127.0.0.1)
+   - Правиш промени и ги виждаш веднага
+   - Правим промени в настройките от Theme settings/Leasing
+   - Добавяме блок там къде искаме (продуктова страница). Използваме Custom Liquid
+   - Custom Liquid: {% render 'dsk-product-button', product: product %}
+   - Добавяме блок там къде искаме (страница количка). Използваме Custom Liquid
+   - Custom Liquid: {% render 'dsk-cart-button' %}
+
+7) Push като unpublished (safe deploy)
+   shopify theme push -s test-avalon.myshopify.com --unpublished
+   - В Admin: Online Store -> Themes -> Theme library ще видиш новата unpublished тема
+   - Preview / Customize
+   - Publish когато си готов
+   
+8) - 5 и 6 отново. Но вече в самия магазин.
+
+По избор (удобни допълнения)
+A) Push към конкретна unpublished тема (за да не се създава нова всеки път)
+   1) shopify theme list -s test-avalon.myshopify.com
+   2) shopify theme push -s test-avalon.myshopify.com --theme <UNPUBLISHED_THEME_ID>
+
+B) Добра практика
+   - Дръж проекта в git repo (branch-ове по клиенти/магазини или по feature-и)
+
+############### server #######################################################
+За най-бърза проверка инсталирай MaxMind GeoLite2:
+Регистрирай се на https://www.maxmind.com/en/geolite2/signup
+Изтегли GeoLite2-Country.mmdb
+Инсталирай PHP библиотеката: composer require maxmind-db/reader
+Постави GeoLite2-Country.mmdb в /app/
+---
