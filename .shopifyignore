@@ -1,0 +1,36 @@
+# Local / repository files - NOT uploaded by shopify theme push / theme tooling.
+# Theme runtime (assets/, snippets/, config/, sections/, templates/, layout/,
+# locales/, blocks/) must remain uploadable. Do not ignore by broad extensions.
+
+# Self / Git metadata
+.shopifyignore
+.gitignore
+.gitattributes
+.git/
+.github/
+
+# IDE / editor
+.vscode/
+.cursor/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local development tooling (not theme runtime)
+scripts/
+
+# Repository documentation (not theme runtime)
+shopify-theme-procedure.txt
+README.md
+docs/
+
+# Temporary / backup files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~

@@ -17,10 +17,10 @@
     data-unicid="{{ uni_unicid | escape }}"
     data-shop-domain="{{ shop.domain | escape }}"
     data-shop-permanent-domain="{{ shop.permanent_domain | escape }}"
-    data-currency="{{ shop.currency | escape }}"
     style="--uni-max-width: {{ settings.uni_btn_max_width | default: 570 }}px; --uni-button-height: {{ settings.uni_btn_height | default: 52 }}px; --uni-button-radius: {{ settings.uni_btn_round | default: 26 }}px; --uni-button-margin-top: {{ settings.uni_btn_margin_top | default: 0 }}px;"
   >
     {{ 'uni-cart-button.css' | asset_url | stylesheet_tag }}
+    <script src="{{ 'uni-transport.js' | asset_url }}" defer></script>
     <script src="{{ 'uni-cart-button.js' | asset_url }}" defer></script>
 
     <button type="button" class="uni-cart-button">

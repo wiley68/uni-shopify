@@ -1,57 +1,136 @@
 Работеща процедура за промени по Shopify тема (пример: test-avalon.myshopify.com)
 
-UniCredit Shopify integration files (Product + Cart):
+================================================================================
+FROZEN PRODUCT/CART CONTRACT (frontend → CP)
+================================================================================
+
+Top-level POST fields (exact):
+  source
+  shop_domain
+  shop_permanent_domain
+  unicid
+  currency
+  products
+  total_price_cents
+
+source:
+  product | cart
+
+products:
+  JSON string containing an array of items
+
+products[] item fields (exact):
+  product_id
+  product_title
+  product_handle
+  variant_id
+  variant_title
+  selected_options   // [{ "name": "...", "value": "..." }, ...]
+  quantity
+  unit_price_cents
+  total_price_cents
+
+Trust boundary:
+  ALL frontend fields are UNTRUSTED.
+  CP must validate every field server-side.
+  Domains/unicid/currency/money are public context, not authentication.
+
+================================================================================
+Theme compatibility policy
+================================================================================
+
+This integration is distributed to unknown Shopify stores and themes.
+Do NOT assume Dawn, Horizon, or any specific theme layout.
+
+Resolution priority:
+  1. Shopify API / runtime state
+     (cart.js, variants/{id}.js, products/{handle}.js, Shopify.currency, …)
+  2. Platform-level form conventions
+     (form[action*="/cart/add"], input[name="id"], input[name="quantity"], …)
+  3. Generic defensive DOM selectors (validated; never arbitrary first match)
+     e.g. input[name="quantity"], input[type="number"][name*="quantity"]
+  4. Theme-specific selectors / wrappers (.shopify-section, Dawn layouts, …)
+     — fallback ONLY, never primary architectural contract
+
+When a generic selector can match more than one product context:
+  validate association (form containment, form="<id>", unique page candidate).
+  Do NOT pick document.querySelector(...) first match arbitrarily.
+
+Product quantity follows this policy (JET-compatible generic selectors + filtering).
+Product price/ownership uses Ajax APIs; variant id prefers form[name=id].
+
+Currency:
+  currency = presentment currency matching Ajax monetary values
+  Cart: cart.currency from cart.js (NOT Liquid shop.currency)
+  Product: Shopify.currency.active, fallback cart.js currency
+  Invalid/missing presentment currency → fail safely, no POST
+
+Discounts (Cart):
+  unit_price_cents     = final_price (fallback price)
+  line total_price_cents = final_line_price (fallback line_price, else unit*qty)
+  top-level total_price_cents = cart.total_price (authoritative)
+  sum(products[].total_price_cents) MAY differ from top-level total_price_cents
+  when cart-level discounts apply — this is expected, not invalid.
+
+Modal lifecycle:
+  Product and Cart share one page-level active Uni flow (window.__UniTransport).
+  Only one UniCredit modal may be active at a time.
+  Body scroll lock/unlock is owned by the shared active flow.
+  Closing an inactive modal must not alter page scroll.
+  postMessage uni:close accepted only when:
+    event.origin === new URL(CP_BASE_URL).origin   // derived from central config
+    event.data.type === "uni:close"
+    event.source === active iframe.contentWindow
+
+================================================================================
+CP BASE URL — SINGLE SOURCE OF TRUTH (deployment packaging)
+================================================================================
+
+File:  assets/uni-transport.js
+Value: CP_BASE_URL   ← change ONLY this for environment packaging
+
+  DEV:        https://uni.avalonbg.com
+  TEST:       <test CP base URL>
+  PRODUCTION: <production CP base URL>
+
+Derived automatically:
+  allowed postMessage origin = new URL(CP_BASE_URL).origin
+  DEV/TEST echo POST URL     = {CP_BASE_URL origin}/shopify/product-test
+
+Do NOT put CP URL in Theme Editor / settings_schema.json.
+Do NOT duplicate CP hostnames in Product/Cart JS.
+Invalid CP_BASE_URL → fail safely (no modal, no POST).
+
+Echo path /shopify/product-test is DEV/TEST ONLY.
+Before production: set production CP_BASE_URL and replace echo path with
+production CP routes if they differ.
+
+================================================================================
+FILES
+================================================================================
 
 snippets/
   uni-product-button.liquid
-    - renders only when settings.uni_status is on and settings.uni_unicid is set
     - Custom Liquid (product page): {% render 'uni-product-button', product: product %}
-    - passes shop.domain, shop.permanent_domain, shop.currency, product context
+    - requires settings.uni_status + settings.uni_unicid + product
   uni-cart-button.liquid
-    - renders only when settings.uni_status is on and settings.uni_unicid is set
     - Custom Liquid (cart page): {% render 'uni-cart-button' %}
-    - passes shop.domain, shop.permanent_domain, shop.currency, unicid
-    - does NOT trust Liquid cart state; JS fetches cart.js on click
+    - requires settings.uni_status + settings.uni_unicid
+    - Liquid cart is NOT authoritative; JS uses cart.js on click
 
 assets/
-  uni-product-button.css
-    - Product button styling (approved Phase 3A design)
-    - Modal shell ~900x760, max-width/max-height: calc(100vw/vh - 32px)
-  uni-product-button.js
-    - resolves selected variant via {Shopify.routes.root}variants/{id}.js
-    - POST form-targets iframe to temporary DEV/TEST CP echo:
-      https://uni.avalonbg.com/shopify/product-test
-      (NOT a production endpoint)
-    - payload: source=product, shop_domain, shop_permanent_domain, unicid,
-      currency, products (JSON string array), total_price_cents
-    - overlay click does NOT close; X / Escape / postMessage uni:close do
-    - accepts postMessage { type: 'uni:close' } only from
-      origin https://uni.avalonbg.com
-  uni-cart-button.css
-    - same UniCredit visual design as Product button
-    - same modal shell dimensions/behavior as Product
-  uni-cart-button.js
-    - fetches current cart via {Shopify.routes.root}cart.js on click
-    - normalizes all cart lines to shared products[] contract
-    - money: item final_price / final_line_price; cart total_price (cents)
-    - POST to the same temporary DEV/TEST CP echo as Product
-      https://uni.avalonbg.com/shopify/product-test
-      (NOT a production endpoint)
-    - source=cart; same top-level fields as Product
-    - empty cart → safe message, no POST / no iframe
-    - read-only vs Shopify cart (no clear / mutate / checkout redirect)
-    - overlay click does NOT close; X / Escape / postMessage uni:close do
-    - accepts postMessage { type: 'uni:close' } only from
-      origin https://uni.avalonbg.com
+  uni-transport.js
+    - CP_BASE_URL single source of truth (DEV/TEST/PRODUCTION packaging)
+    - shared active flow, scroll ownership, Escape, postMessage hardening
+  uni-product-button.css / uni-product-button.js
+  uni-cart-button.css / uni-cart-button.js
+  uni_logo.svg
 
 config/settings_schema.json
-  UniCredit settings block (shared by Product and Cart)
+  UniCredit settings block (shared)
 
-No Checkout integration.
-No Shopify app.
-No Shopify order creation.
+No Checkout integration / Shopify app / Shopify order creation.
 No CP calculator / SmartUCF / order creation in theme.
-Business flow is handled by UniCredit CP iframe (production CP URL later).
 
 1) Папка за проекта
    - Създай папка за магазина (напр. test-avalon/)
@@ -137,35 +216,67 @@ Business flow is handled by UniCredit CP iframe (production CP URL later).
   }
    - Добави snippets - цялото съдържание на папката /snippets в Shopify theme /snippets
    - Добави assets - цялото съдържание на папката /assets в Shopify theme /assets
+     (включително uni-transport.js)
+   - .shopifyignore предпазва local development files от качване чрез Shopify CLI.
+     Local-only (не се качват): scripts/ (вкл. scripts/check-uni-hardening.js),
+     shopify-theme-procedure.txt, Git/IDE metadata (.git/, .github/, .vscode/,
+     .cursor/, .idea/), OS junk, temporary/backup files.
+     Runtime UniCredit files в assets/ и snippets/ остават uploadable.
 
 6) Dev preview (hot reload без push)
    shopify theme dev -s test-avalon.myshopify.com
    - Отвори URL-то, което CLI показва (обикновено localhost / 127.0.0.1)
-   - Правиш промени и ги виждаш веднага
-   - Правим промени в настройките от Theme settings/УниКредит покупки на Кредит
-   - Product страница — Custom Liquid:
-     {% render 'uni-product-button', product: product %}
-   - Cart страница — Custom Liquid:
-     {% render 'uni-cart-button' %}
-   - Задай Theme setting uni_unicid (без него бутоните не се рендерират /
-     JS не POST-ва към CP).
-   - Product/Cart runtime: click → modal → iframe POST към temporary DEV/TEST
-     echo https://uni.avalonbg.com/shopify/product-test
-     (смени с production CP URL в по-късна фаза; НЕ е production endpoint).
-   - Product echo: source=product, 1 item в products[].
-   - Cart echo: source=cart, N items в products[], total_price_cents от cart.js.
-   - Close от CP изпраща postMessage uni:close (origin https://uni.avalonbg.com).
+   - Theme settings → УниКредит → задай uni_unicid
+   - Product: {% render 'uni-product-button', product: product %}
+   - Cart: {% render 'uni-cart-button' %}
+   - Environment package: set CP_BASE_URL in assets/uni-transport.js
+     (DEV default https://uni.avalonbg.com). Product/Cart POST to
+     {CP_BASE_URL}/shopify/product-test — DEV/TEST echo only.
 
 7) Push като unpublished (safe deploy)
    shopify theme push -s test-avalon.myshopify.com --unpublished
-   - В Admin: Online Store -> Themes -> Theme library ще видиш новата unpublished тема
-   - Preview / Customize
+   - Admin: Online Store → Themes → Theme library → Preview / Customize
    - Publish когато си готов
-   
-8) - production installation/runtime verification step.
+
+8) Production installation / runtime verification checklist
+   BEFORE production:
+   [ ] Set production CP_BASE_URL in assets/uni-transport.js (one value)
+   [ ] Replace temporary /shopify/product-test echo path with production CP routes if needed
+   [ ] Confirm production URL is HTTPS and owned by UniCredit CP
+   [ ] Confirm uni.avalonbg.com is absent from Product/Cart JS (only in CP_BASE_URL / docs)
+   [ ] uni_status on + uni_unicid set in published theme settings
+   [ ] Product Custom Liquid render present on product template
+   [ ] Cart Custom Liquid render present on cart template
+   [ ] uni-transport.js + product/cart assets deployed
+
+   Product runtime:
+   [ ] variant + quantity resolve via platform/generic selectors (not Dawn-only)
+   [ ] quantity matches visible UI; multi-product pages do not pick arbitrary qty
+   [ ] wrong-product variant cannot POST
+   [ ] currency is presentment (matches Ajax amounts), not blind shop.currency
+   [ ] echo: source=product, products[1], total_price_cents
+
+   Cart runtime:
+   [ ] cart.js is source of truth (after quantity Ajax updates)
+   [ ] currency = cart.currency
+   [ ] line discounts use final_*; top-level uses cart.total_price
+   [ ] cart-level discount may make sum(lines) != total — accepted
+   [ ] empty cart → no POST
+   [ ] echo: source=cart, N products
+
+   Shared modal:
+   [ ] only one Uni modal active (Product vs Cart mutual exclusion)
+   [ ] overlay does not close; X / Escape / uni:close close
+   [ ] body scroll restored exactly once on close
+   [ ] inactive modal cannot alter scroll/DOM via postMessage
+
+   Security/ops:
+   [ ] treat all frontend payload fields as UNTRUSTED at CP
+   [ ] no Shopify cart mutation from Uni theme scripts
+   [ ] no calculator/SmartUCF/banking logic in theme
 
 По избор (удобни допълнения)
-A) Push към конкретна unpublished тема (за да не се създава нова всеки път)
+A) Push към конкретна unpublished тема
    1) shopify theme list -s test-avalon.myshopify.com
    2) shopify theme push -s test-avalon.myshopify.com --theme <UNPUBLISHED_THEME_ID>
 

@@ -1,23 +1,14 @@
 (function () {
   "use strict";
 
-  // Temporary DEV/TEST CP echo endpoint — not a production URL.
-  // Shared with Product to prove the common Product/Cart protocol.
-  var UNI_CP_URL = "https://uni.avalonbg.com/shopify/product-test";
-  var UNI_CP_ORIGIN = "https://uni.avalonbg.com";
+  var transport = window.__UniTransport;
+  if (!transport) return;
+
   var MODAL_ID = "uni-cart-modal";
   var IFRAME_NAME = "uni-cart-frame";
   var MAX_QUANTITY = 9999;
   var GLOBALS_KEY = "__uniCartButtonGlobalsBound";
   var requestInProgress = false;
-  var previousBodyOverflow = "";
-
-  function shopifyRoot() {
-    var root =
-      window.Shopify && window.Shopify.routes && window.Shopify.routes.root;
-    root = typeof root === "string" && root ? root : "/";
-    return root.endsWith("/") ? root : root + "/";
-  }
 
   function isNonNegativeSafeInteger(value) {
     return Number.isSafeInteger(value) && value >= 0;
@@ -33,8 +24,14 @@
     return Number.isSafeInteger(number) && number > 0 ? number : null;
   }
 
-  function fetchCart() {
-    return fetch(shopifyRoot() + "cart.js", {
+  function delay(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function fetchCartOnce() {
+    return fetch(transport.shopifyRoot() + "cart.js", {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     }).then(function (response) {
@@ -43,20 +40,47 @@
     });
   }
 
+  function cartFingerprint(cart) {
+    var items = cart && Array.isArray(cart.items) ? cart.items : [];
+    var lines = items
+      .map(function (item) {
+        return [
+          item.key || item.variant_id || "",
+          item.quantity || 0,
+          item.final_line_price != null
+            ? item.final_line_price
+            : item.line_price || 0,
+        ].join(":");
+      })
+      .join("|");
+    return [
+      cart.item_count || 0,
+      cart.total_price || 0,
+      cart.currency || "",
+      lines,
+    ].join(";");
+  }
+
   /**
-   * Effective unit price after line-level discounts.
-   * Prefer final_price; fall back to price.
+   * Theme-neutral stability check against Ajax cart update races.
+   * Up to 3 cart.js reads; returns the latest snapshot if fingerprints differ.
+   * No infinite polling; no Dawn-specific hooks.
    */
+  async function fetchStableCart() {
+    var first = await fetchCartOnce();
+    await delay(120);
+    var second = await fetchCartOnce();
+    if (cartFingerprint(first) === cartFingerprint(second)) return second;
+    await delay(180);
+    return fetchCartOnce();
+  }
+
   function lineUnitPriceCents(item) {
     if (isNonNegativeSafeInteger(item.final_price)) return item.final_price;
     if (isNonNegativeSafeInteger(item.price)) return item.price;
     return null;
   }
 
-  /**
-   * Effective line total after line-level discounts.
-   * Prefer final_line_price; fall back to line_price; else unit * quantity.
-   */
   function lineTotalCents(item, quantity, unitCents) {
     if (isNonNegativeSafeInteger(item.final_line_price))
       return item.final_line_price;
@@ -65,10 +89,6 @@
     return isNonNegativeSafeInteger(computed) ? computed : null;
   }
 
-  /**
-   * Authoritative cart total after cart-level discounts.
-   * Prefer cart.total_price; do not silently replace with sum of lines.
-   */
   function cartTotalCents(cart) {
     if (isNonNegativeSafeInteger(cart.total_price)) return cart.total_price;
     return null;
@@ -129,6 +149,9 @@
     var items = cart && Array.isArray(cart.items) ? cart.items : [];
     if (!items.length) throw new Error("empty-cart");
 
+    var currency = transport.validateCurrency(cart.currency);
+    if (!currency) throw new Error("invalid-currency");
+
     var products = items.map(normalizeCartItem);
     var total = cartTotalCents(cart);
     if (total === null || total <= 0) throw new Error("invalid-cart-total");
@@ -138,7 +161,7 @@
       shop_domain: container.dataset.shopDomain || window.location.hostname,
       shop_permanent_domain: container.dataset.shopPermanentDomain || "",
       unicid: container.dataset.unicid || "",
-      currency: container.dataset.currency || "",
+      currency: currency,
       products: JSON.stringify(products),
       total_price_cents: total,
     };
@@ -174,7 +197,6 @@
       '<div class="uni-cart-modal__frame-wrap"></div>' +
       "</div>";
 
-    // Overlay click intentionally does NOT close the modal.
     modal
       .querySelector(".uni-cart-modal__close")
       .addEventListener("click", closeModal);
@@ -182,30 +204,32 @@
     return modal;
   }
 
-  function isModalOpen() {
-    var modal = document.getElementById(MODAL_ID);
-    return !!(modal && modal.classList.contains("is-open"));
-  }
-
   function closeModal() {
-    var modal = document.getElementById(MODAL_ID);
-    if (!modal) return;
-    modal.classList.remove("is-open");
-    modal.setAttribute("aria-hidden", "true");
-    var wrap = modal.querySelector(".uni-cart-modal__frame-wrap");
-    if (wrap) wrap.replaceChildren();
-    document.body.style.overflow = previousBodyOverflow;
-  }
+    if (transport.getFlow() !== "cart") return;
 
-  function onMessage(event) {
-    if (event.origin !== UNI_CP_ORIGIN) return;
-    var data = event.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) return;
-    if (data.type !== "uni:close") return;
-    closeModal();
+    var modal = document.getElementById(MODAL_ID);
+    if (modal) {
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      var wrap = modal.querySelector(".uni-cart-modal__frame-wrap");
+      if (wrap) wrap.replaceChildren();
+    }
+    transport.end("cart");
   }
 
   function postToIframe(payload) {
+    if (!transport.isConfigured() || !transport.CP_URL) {
+      throw new Error("invalid-cp-config");
+    }
+    if (
+      !transport.begin("cart", {
+        modalId: MODAL_ID,
+        closeImpl: closeModal,
+      })
+    ) {
+      throw new Error("flow-busy");
+    }
+
     var modal = ensureModal();
     var wrap = modal.querySelector(".uni-cart-modal__frame-wrap");
     wrap.innerHTML =
@@ -229,14 +253,13 @@
     });
 
     wrap.appendChild(iframe);
-    previousBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    transport.setIframe(iframe);
     modal.classList.add("is-open");
     modal.setAttribute("aria-hidden", "false");
 
     var form = document.createElement("form");
     form.method = "POST";
-    form.action = UNI_CP_URL;
+    form.action = transport.CP_URL;
     form.target = iframe.name;
     form.hidden = true;
 
@@ -255,7 +278,7 @@
   }
 
   async function handleClick(container, button) {
-    if (requestInProgress || isModalOpen()) return;
+    if (requestInProgress || transport.isActive()) return;
     requestInProgress = true;
     button.disabled = true;
     clearError(container);
@@ -270,12 +293,10 @@
         return;
       }
 
-      var cart = await fetchCart();
+      var cart = await fetchStableCart();
       var payload = buildPayload(container, cart);
 
-      if (!payload.currency || !payload.shop_permanent_domain) {
-        throw new Error("invalid-context");
-      }
+      if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
       postToIframe(payload);
     } catch (error) {
@@ -314,11 +335,6 @@
   function registerGlobalsOnce() {
     if (window[GLOBALS_KEY]) return;
     window[GLOBALS_KEY] = true;
-
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape") closeModal();
-    });
-    window.addEventListener("message", onMessage);
     document.addEventListener("shopify:section:load", initialize);
   }
 
