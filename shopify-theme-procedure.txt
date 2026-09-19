@@ -1,12 +1,17 @@
 Работеща процедура за промени по Shopify тема (пример: test-avalon.myshopify.com)
 
-UniCredit Shopify integration files (Product phase):
+UniCredit Shopify integration files (Product + Cart):
 
 snippets/
   uni-product-button.liquid
     - renders only when settings.uni_status is on and settings.uni_unicid is set
-    - Custom Liquid: {% render 'uni-product-button', product: product %}
+    - Custom Liquid (product page): {% render 'uni-product-button', product: product %}
     - passes shop.domain, shop.permanent_domain, shop.currency, product context
+  uni-cart-button.liquid
+    - renders only when settings.uni_status is on and settings.uni_unicid is set
+    - Custom Liquid (cart page): {% render 'uni-cart-button' %}
+    - passes shop.domain, shop.permanent_domain, shop.currency, unicid
+    - does NOT trust Liquid cart state; JS fetches cart.js on click
 
 assets/
   uni-product-button.css
@@ -17,16 +22,31 @@ assets/
     - POST form-targets iframe to temporary DEV/TEST CP echo:
       https://uni.avalonbg.com/shopify/product-test
       (NOT a production endpoint)
-    - payload: source, shop_domain, shop_permanent_domain, unicid, currency,
-      products (JSON string array), total_price_cents
+    - payload: source=product, shop_domain, shop_permanent_domain, unicid,
+      currency, products (JSON string array), total_price_cents
+    - overlay click does NOT close; X / Escape / postMessage uni:close do
+    - accepts postMessage { type: 'uni:close' } only from
+      origin https://uni.avalonbg.com
+  uni-cart-button.css
+    - same UniCredit visual design as Product button
+    - same modal shell dimensions/behavior as Product
+  uni-cart-button.js
+    - fetches current cart via {Shopify.routes.root}cart.js on click
+    - normalizes all cart lines to shared products[] contract
+    - money: item final_price / final_line_price; cart total_price (cents)
+    - POST to the same temporary DEV/TEST CP echo as Product
+      https://uni.avalonbg.com/shopify/product-test
+      (NOT a production endpoint)
+    - source=cart; same top-level fields as Product
+    - empty cart → safe message, no POST / no iframe
+    - read-only vs Shopify cart (no clear / mutate / checkout redirect)
     - overlay click does NOT close; X / Escape / postMessage uni:close do
     - accepts postMessage { type: 'uni:close' } only from
       origin https://uni.avalonbg.com
 
 config/settings_schema.json
-  UniCredit settings block
+  UniCredit settings block (shared by Product and Cart)
 
-No Cart integration in this phase.
 No Checkout integration.
 No Shopify app.
 No Shopify order creation.
@@ -123,16 +143,18 @@ Business flow is handled by UniCredit CP iframe (production CP URL later).
    - Отвори URL-то, което CLI показва (обикновено localhost / 127.0.0.1)
    - Правиш промени и ги виждаш веднага
    - Правим промени в настройките от Theme settings/УниКредит покупки на Кредит
-   - Добавяме блок там къде искаме (продуктова страница). Използваме Custom Liquid
-   - Custom Liquid: {% render 'uni-product-button', product: product %}
-   - Задай Theme setting uni_unicid (без него бутонът не се рендерира /
+   - Product страница — Custom Liquid:
+     {% render 'uni-product-button', product: product %}
+   - Cart страница — Custom Liquid:
+     {% render 'uni-cart-button' %}
+   - Задай Theme setting uni_unicid (без него бутоните не се рендерират /
      JS не POST-ва към CP).
-   - Product runtime: click → modal → iframe POST към temporary DEV/TEST
+   - Product/Cart runtime: click → modal → iframe POST към temporary DEV/TEST
      echo https://uni.avalonbg.com/shopify/product-test
      (смени с production CP URL в по-късна фаза; НЕ е production endpoint).
-   - Провери echo: source=product, domains, unicid, currency, products JSON,
-     total_price_cents. Close от CP изпраща postMessage uni:close.
-   - Cart интеграцията не е част от Product фазата.
+   - Product echo: source=product, 1 item в products[].
+   - Cart echo: source=cart, N items в products[], total_price_cents от cart.js.
+   - Close от CP изпраща postMessage uni:close (origin https://uni.avalonbg.com).
 
 7) Push като unpublished (safe deploy)
    shopify theme push -s test-avalon.myshopify.com --unpublished

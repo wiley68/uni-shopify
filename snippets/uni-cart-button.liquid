@@ -1,0 +1,39 @@
+{% comment %}
+  UniCredit Cart financing entry point.
+  Browser data is public/untrusted; CP must validate every field server-side.
+  Cart state is fetched at click time from cart.js — Liquid cart is not authoritative.
+{% endcomment %}
+
+{% assign uni_unicid = settings.uni_unicid | strip %}
+{% if settings.uni_status and uni_unicid != blank %}
+  {% assign uni_btn_text = settings.uni_btn_text | strip %}
+  {% if uni_btn_text == blank %}
+    {% assign uni_btn_text = 'Купи на изплащане' %}
+  {% endif %}
+
+  <div
+    class="uni-cart-slot"
+    data-uni-cart-button
+    data-unicid="{{ uni_unicid | escape }}"
+    data-shop-domain="{{ shop.domain | escape }}"
+    data-shop-permanent-domain="{{ shop.permanent_domain | escape }}"
+    data-currency="{{ shop.currency | escape }}"
+    style="--uni-max-width: {{ settings.uni_btn_max_width | default: 570 }}px; --uni-button-height: {{ settings.uni_btn_height | default: 52 }}px; --uni-button-radius: {{ settings.uni_btn_round | default: 26 }}px; --uni-button-margin-top: {{ settings.uni_btn_margin_top | default: 0 }}px;"
+  >
+    {{ 'uni-cart-button.css' | asset_url | stylesheet_tag }}
+    <script src="{{ 'uni-cart-button.js' | asset_url }}" defer></script>
+
+    <button type="button" class="uni-cart-button">
+      <span class="uni-cart-button__label">{{ uni_btn_text | escape }}</span>
+      <img
+        class="uni-cart-button__logo"
+        src="{{ 'uni_logo.svg' | asset_url }}"
+        alt="UniCredit"
+        width="78"
+        height="24"
+        loading="lazy"
+      >
+    </button>
+    <p class="uni-cart-error" role="alert" hidden></p>
+  </div>
+{% endif %}
