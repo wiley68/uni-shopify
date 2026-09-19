@@ -56,7 +56,12 @@ When a generic selector can match more than one product context:
   validate association (form containment, form="<id>", unique page candidate).
   Do NOT pick document.querySelector(...) first match arbitrarily.
 
-Product quantity follows this policy (JET-compatible generic selectors + filtering).
+Product quantity follows this policy:
+  - JET-compatible generic selectors first
+    (input[name="quantity"], input[type="number"][name*="quantity"])
+  - findProductForm() only disambiguates when multiple candidates exist
+  - hidden/stale duplicates are dropped when a presented control exists
+  - never arbitrary first match across multiple product contexts
 Product price/ownership uses Ajax APIs; variant id prefers form[name=id].
 
 Currency:

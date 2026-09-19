@@ -111,7 +111,13 @@
   }
 
   function isUsableQuantityControl(control) {
-    if (!control) return false;
+    if (
+      !control ||
+      !control.tagName ||
+      control.tagName.toLowerCase() !== "input"
+    ) {
+      return false;
+    }
     if (control.disabled) return false;
     if (control.getAttribute && control.getAttribute("disabled") != null) {
       return false;
@@ -119,120 +125,140 @@
     return true;
   }
 
-  function isAssociatedWithForm(control, form) {
-    if (!control || !form) return false;
-    if (form.contains(control)) return true;
+  /**
+   * Visibility as ranking/disambiguation signal only — not an absolute requirement.
+   * Themes may drive a visually hidden native input from custom UI.
+   */
+  function isPresentedQuantityControl(control) {
+    if (!control) return false;
+    if (control.type === "hidden") return false;
+    if (control.hidden) return false;
+    if (
+      control.getAttribute &&
+      control.getAttribute("aria-hidden") === "true"
+    ) {
+      return false;
+    }
+    var inline = (control.getAttribute && control.getAttribute("style")) || "";
+    if (/display\s*:\s*none/i.test(inline)) return false;
+    if (/visibility\s*:\s*hidden/i.test(inline)) return false;
+    try {
+      if (typeof window !== "undefined" && window.getComputedStyle) {
+        var cs = window.getComputedStyle(control);
+        if (cs && (cs.display === "none" || cs.visibility === "hidden")) {
+          return false;
+        }
+      }
+    } catch (_ignored) {}
+    return true;
+  }
+
+  function getControlForm(control) {
+    if (!control) return null;
+    if (control.form instanceof HTMLFormElement) return control.form;
+    var formAttr = control.getAttribute && control.getAttribute("form");
+    if (formAttr && document.getElementById) {
+      var byId = document.getElementById(formAttr);
+      if (byId instanceof HTMLFormElement) return byId;
+    }
+    var closest = control.closest && control.closest("form");
+    return closest instanceof HTMLFormElement ? closest : null;
+  }
+
+  function associationRank(control, form) {
+    if (!control || !form) return 0;
+    var linked = getControlForm(control);
+    if (linked === form) return 4;
     var formAttr = control.getAttribute("form");
-    if (formAttr && form.id && formAttr === form.id) return true;
-    var owning = control.closest("form");
-    return !!(owning && owning === form);
+    if (formAttr && form.id && formAttr === form.id) return 3;
+    if (form.contains(control)) return 2;
+    return 0;
   }
 
   function collectGenericQuantityCandidates() {
     var nodes = document.querySelectorAll(QUANTITY_SELECTOR);
-    var out = [];
+    var usable = [];
     for (var i = 0; i < nodes.length; i++) {
-      if (isUsableQuantityControl(nodes[i])) out.push(nodes[i]);
+      if (isUsableQuantityControl(nodes[i])) usable.push(nodes[i]);
     }
-    return out;
+    if (!usable.length) return usable;
+
+    // Drop obviously stale/hidden duplicates when a presented control exists.
+    // If ALL candidates are visually hidden (custom UI wrappers), keep them.
+    var presented = [];
+    for (var p = 0; p < usable.length; p++) {
+      if (isPresentedQuantityControl(usable[p])) presented.push(usable[p]);
+    }
+    return presented.length ? presented : usable;
+  }
+
+  function pickUniqueByAssociation(candidates, form) {
+    if (!form || !candidates.length) return null;
+    var bestRank = 0;
+    var winners = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var rank = associationRank(candidates[i], form);
+      if (rank > bestRank) {
+        bestRank = rank;
+        winners = [candidates[i]];
+      } else if (rank > 0 && rank === bestRank) {
+        winners.push(candidates[i]);
+      }
+    }
+    if (bestRank === 0) return null;
+    if (winners.length === 1) return winners[0];
+
+    var visibleWinners = [];
+    for (var v = 0; v < winners.length; v++) {
+      if (isPresentedQuantityControl(winners[v])) {
+        visibleWinners.push(winners[v]);
+      }
+    }
+    if (visibleWinners.length === 1) return visibleWinners[0];
+    return null;
   }
 
   /**
-   * Quantity resolution — platform / generic first, theme-section last:
-   * 1) quantity inside current add-to-cart form
-   * 2) page-level input[form="<form-id>"] association
-   * 3) generic Shopify quantity candidates (JET-compatible), filtered
-   * 4) theme-section compatibility fallback
-   * else → 1 (only when no control is associated)
+   * Quantity resolution — JET-compatible generic discovery FIRST.
+   * findProductForm() is used only to disambiguate multiple candidates.
+   *
+   * 1) collect generic Shopify quantity candidates
+   * 2) exactly one candidate → use it (JET behavior)
+   * 3) multiple → associate/rank via current add-to-cart form
+   * 4) visible tie-break among remaining same-rank duplicates
+   * 5) genuine ambiguity → safe fallback 1
+   * Invalid explicit selected value → null (fail safely)
    */
   function resolveQuantity(container) {
-    var form = findProductForm(container);
-
-    // Step 1 — explicit current product form
-    if (form) {
-      var inForm = form.querySelector(QUANTITY_SELECTOR);
-      if (inForm) {
-        return parseQuantityControl(inForm).value;
-      }
-    }
-
-    // Step 2 — explicit HTML form association (page-level, not section-bound)
-    if (form && form.id) {
-      var formId = form.id;
-      var linked = document.querySelectorAll(
-        'input[name="quantity"][form], input[type="number"][name*="quantity"][form]',
-      );
-      for (var i = 0; i < linked.length; i++) {
-        if (
-          linked[i].getAttribute("form") === formId &&
-          isUsableQuantityControl(linked[i])
-        ) {
-          return parseQuantityControl(linked[i]).value;
-        }
-      }
-    }
-
-    // Step 3 — generic Shopify quantity candidates (validated, never arbitrary first)
     var candidates = collectGenericQuantityCandidates();
-    var associated = [];
-    for (var a = 0; a < candidates.length; a++) {
-      if (isAssociatedWithForm(candidates[a], form)) {
-        associated.push(candidates[a]);
-      }
-    }
 
-    // Case A / C — exactly one candidate associated with current product form
-    if (associated.length === 1) {
-      return parseQuantityControl(associated[0]).value;
-    }
-
-    // Case B — exactly one plausible generic quantity on the page
+    // A — exactly one generic candidate (proven JET path)
     if (candidates.length === 1) {
-      var only = candidates[0];
-      var owningForm = only.closest("form");
-      var formAttr = only.getAttribute("form");
-      var linkedElsewhere = formAttr && form && form.id && formAttr !== form.id;
-      var ownedByOther =
-        owningForm &&
-        isAddToCartForm(owningForm) &&
-        form &&
-        owningForm !== form;
-      if (!linkedElsewhere && !ownedByOther) {
-        return parseQuantityControl(only).value;
-      }
+      return parseQuantityControl(candidates[0]).value;
     }
 
-    // Case D — multiple candidates with no unique association → do not guess
-
-    // Step 4 — theme-section compatibility fallback ONLY
-    var section = findProductSection(container);
-    if (section) {
-      var sectionNodes = section.querySelectorAll(QUANTITY_SELECTOR);
-      var sectionPlausible = [];
-      for (var s = 0; s < sectionNodes.length; s++) {
-        var control = sectionNodes[s];
-        if (!isUsableQuantityControl(control)) continue;
-        var sFormAttr = control.getAttribute("form");
-        var sOwning = control.closest("form");
-        if (form) {
-          if (isAssociatedWithForm(control, form)) {
-            sectionPlausible.push(control);
-            continue;
-          }
-          if (sFormAttr && form.id && sFormAttr !== form.id) continue;
-          if (sOwning && isAddToCartForm(sOwning) && sOwning !== form) continue;
-          if (!sFormAttr) sectionPlausible.push(control);
-        } else if (!sFormAttr) {
-          if (sOwning && isAddToCartForm(sOwning)) continue;
-          sectionPlausible.push(control);
-        }
-      }
-      if (sectionPlausible.length === 1) {
-        return parseQuantityControl(sectionPlausible[0]).value;
-      }
+    if (candidates.length === 0) {
+      return 1;
     }
 
-    // Missing quantity control for this product context.
+    // B — multiple candidates: form association only as disambiguation
+    var form = findProductForm(container);
+    var associated = pickUniqueByAssociation(candidates, form);
+    if (associated) {
+      return parseQuantityControl(associated).value;
+    }
+
+    // C — visible/interactive tie-break when one presented remains
+    var presented = [];
+    for (var i = 0; i < candidates.length; i++) {
+      if (isPresentedQuantityControl(candidates[i]))
+        presented.push(candidates[i]);
+    }
+    if (presented.length === 1) {
+      return parseQuantityControl(presented[0]).value;
+    }
+
+    // D — genuine multi-product ambiguity: do not pick arbitrary first
     return 1;
   }
 

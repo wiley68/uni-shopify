@@ -104,7 +104,7 @@ assert.ok(cartJs.indexOf("/shopify/product-test") === -1);
 assert.ok(productJs.indexOf("isConfigured") !== -1);
 assert.ok(cartJs.indexOf("isConfigured") !== -1);
 
-/* Portability: primary quantity uses JET-compatible generic selectors */
+/* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
   productJs.indexOf(
     'input[name="quantity"], input[type="number"][name*="quantity"]',
@@ -116,14 +116,23 @@ assert.ok(
   "generic candidate collection required",
 );
 assert.ok(
-  productJs.indexOf("theme-section compatibility fallback") !== -1 ||
-    productJs.indexOf("Theme-section compatibility fallback") !== -1,
-  "section path must be labeled fallback",
+  productJs.indexOf("JET-compatible generic discovery FIRST") !== -1,
+  "generic-first priority required",
 );
-assert.ok(
-  productJs.indexOf("Step 3 — generic Shopify quantity candidates") !== -1,
-  "generic step must be primary before theme fallback",
-);
+(function assertGenericBeforeFormDisambiguation() {
+  var fn = productJs.indexOf("function resolveQuantity");
+  assert.ok(fn !== -1, "resolveQuantity present");
+  var collectAt = productJs.indexOf("collectGenericQuantityCandidates()", fn);
+  var formAt = productJs.indexOf("findProductForm(container)", fn);
+  assert.ok(
+    collectAt !== -1 && formAt !== -1,
+    "collect + form used in resolveQuantity",
+  );
+  assert.ok(
+    collectAt < formAt,
+    "generic candidates must be collected before findProductForm disambiguation",
+  );
+})();
 
 /* -------------------------------------------------------------------------- */
 /* Minimal DOM for Product quantity fixtures                                  */
@@ -222,17 +231,31 @@ function createEl(tagName, attrs) {
     children: [],
     parentNode: null,
     disabled: !!attrs.disabled,
+    hidden: !!attrs.hidden,
     get id() {
       return this.attrs.id;
     },
     set id(v) {
       this.attrs.id = v;
     },
+    get type() {
+      return this.attrs.type != null ? String(this.attrs.type) : "text";
+    },
     get value() {
       return this.attrs.value != null ? String(this.attrs.value) : "";
     },
     set value(v) {
       this.attrs.value = v;
+    },
+    get form() {
+      if (
+        this.attrs.form &&
+        sandbox.document &&
+        sandbox.document.getElementById
+      ) {
+        return sandbox.document.getElementById(this.attrs.form);
+      }
+      return this.closest("form");
     },
     get classList() {
       var self = this;
@@ -247,6 +270,7 @@ function createEl(tagName, attrs) {
     },
     getAttribute: function (name) {
       var key = String(name);
+      if (key === "disabled" && this.disabled) return "";
       if (this.attrs[key] == null) return null;
       return String(this.attrs[key]);
     },
@@ -325,8 +349,16 @@ function installDom(rootEl) {
     createElement: function () {
       return createEl("div", {});
     },
-    getElementById: function () {
-      return null;
+    getElementById: function (id) {
+      function walk(node) {
+        if (node.attrs && node.attrs.id === id) return node;
+        for (var i = 0; i < node.children.length; i++) {
+          var found = walk(node.children[i]);
+          if (found) return found;
+        }
+        return null;
+      }
+      return walk(rootEl);
     },
   };
 }
@@ -344,76 +376,75 @@ function loadProductApi() {
   return sandbox.__UniProductTestApi;
 }
 
-function caseA_quantityInsideForm() {
+function caseA_oneGenericCandidate() {
+  var wrap = createEl("div", {});
+  var qty = createEl("input", { name: "quantity", value: "2", type: "number" });
+  var uni = createEl("div", { "data-uni-product-button": "" });
+  wrap.appendChild(qty);
+  wrap.appendChild(uni);
+  installDom(wrap);
+  var api = loadProductApi();
+  assert.strictEqual(
+    api.resolveQuantity(uni),
+    2,
+    "Case A: one generic candidate → 2",
+  );
+}
+
+function caseB_quantityOutsideFormOnlyGeneric() {
   var wrap = createEl("div", {});
   var form = createEl("form", {
     id: "product-form",
     action: "/cart/add",
     class: "product-form",
   });
-  var qty = createEl("input", { name: "quantity", value: "2" });
+  var qty = createEl("input", { name: "quantity", value: "2", type: "number" });
   var uni = createEl("div", { "data-uni-product-button": "" });
-  form.appendChild(qty);
-  form.appendChild(uni);
   wrap.appendChild(form);
+  wrap.appendChild(qty);
+  wrap.appendChild(uni);
   installDom(wrap);
   var api = loadProductApi();
   assert.strictEqual(
     api.resolveQuantity(uni),
     2,
-    "Case A: quantity inside form",
+    "Case B: quantity outside form, only generic → 2",
   );
 }
 
-function caseB_quantityFormLinked() {
-  // No shopify-section — page-level form= association
+function caseC_staleFormOneDoesNotBeatCurrentTwo() {
+  // Form has stale/hidden default 1; page has current visible quantity 2.
   var wrap = createEl("div", {});
   var form = createEl("form", {
-    id: "product-form-id",
+    id: "product-form",
     action: "/cart/add",
     class: "product-form",
   });
-  var qty = createEl("input", {
+  var stale = createEl("input", {
+    name: "quantity",
+    value: "1",
+    type: "hidden",
+  });
+  var current = createEl("input", {
     name: "quantity",
     value: "2",
-    form: "product-form-id",
+    type: "number",
   });
   var uni = createEl("div", { "data-uni-product-button": "" });
+  form.appendChild(stale);
+  form.appendChild(uni);
   wrap.appendChild(form);
-  wrap.appendChild(qty);
-  wrap.appendChild(uni);
+  wrap.appendChild(current);
   installDom(wrap);
   var api = loadProductApi();
   assert.strictEqual(
     api.resolveQuantity(uni),
     2,
-    "Case B: form-linked quantity",
+    "Case C: stale form 1 must not beat current generic 2",
   );
 }
 
-function caseC_singleGenericPageQuantity() {
-  // No section wrapper; quantity outside form; exactly one generic candidate
-  var wrap = createEl("div", {});
-  var form = createEl("form", {
-    id: "product-form",
-    action: "/cart/add",
-    class: "product-form",
-  });
-  var qty = createEl("input", { name: "quantity", value: "2" });
-  var uni = createEl("div", { "data-uni-product-button": "" });
-  wrap.appendChild(form);
-  wrap.appendChild(qty);
-  wrap.appendChild(uni);
-  installDom(wrap);
-  var api = loadProductApi();
-  assert.strictEqual(
-    api.resolveQuantity(uni),
-    2,
-    "Case C: exactly one generic page quantity",
-  );
-}
-
-function caseD_multipleCandidatesOneAssociated() {
+function caseD_multipleOneAssociated() {
   var page = createEl("div", {});
   var form = createEl("form", {
     id: "product-form",
@@ -421,10 +452,10 @@ function caseD_multipleCandidatesOneAssociated() {
     class: "product-form",
   });
   var uni = createEl("div", { "data-uni-product-button": "" });
-  // Associated via explicit form="<id>" (outside form body)
   var mainQty = createEl("input", {
     name: "quantity",
     value: "2",
+    type: "number",
     form: "product-form",
   });
   form.appendChild(uni);
@@ -434,7 +465,11 @@ function caseD_multipleCandidatesOneAssociated() {
     action: "/cart/add",
     class: "product-form",
   });
-  var qQty = createEl("input", { name: "quantity", value: "9" });
+  var qQty = createEl("input", {
+    name: "quantity",
+    value: "9",
+    type: "number",
+  });
   qForm.appendChild(qQty);
 
   page.appendChild(form);
@@ -445,12 +480,45 @@ function caseD_multipleCandidatesOneAssociated() {
   assert.strictEqual(
     api.resolveQuantity(uni),
     2,
-    "Case D: only associated product quantity selected",
+    "Case D: multiple candidates, one associated → 2",
   );
 }
 
-function caseE_ambiguousMultipleNoArbitrary() {
-  // Two unassociated generic quantities + form without qty → do not pick first
+function caseE_visibleBeatsHiddenDuplicate() {
+  var wrap = createEl("div", {});
+  var form = createEl("form", {
+    id: "product-form",
+    action: "/cart/add",
+    class: "product-form",
+  });
+  var hiddenDup = createEl("input", {
+    name: "quantity",
+    value: "1",
+    type: "number",
+    style: "display:none",
+    form: "product-form",
+  });
+  var visible = createEl("input", {
+    name: "quantity",
+    value: "2",
+    type: "number",
+    form: "product-form",
+  });
+  var uni = createEl("div", { "data-uni-product-button": "" });
+  form.appendChild(uni);
+  wrap.appendChild(form);
+  wrap.appendChild(hiddenDup);
+  wrap.appendChild(visible);
+  installDom(wrap);
+  var api = loadProductApi();
+  assert.strictEqual(
+    api.resolveQuantity(uni),
+    2,
+    "Case E: visible current control beats hidden duplicate",
+  );
+}
+
+function caseF_genuineAmbiguityNoArbitrary() {
   var page = createEl("div", {});
   var form = createEl("form", {
     id: "product-form",
@@ -458,10 +526,6 @@ function caseE_ambiguousMultipleNoArbitrary() {
     class: "product-form",
   });
   var uni = createEl("div", { "data-uni-product-button": "" });
-  var qtyA = createEl("input", { name: "quantity", value: "2" });
-  var qtyB = createEl("input", { name: "quantity", value: "5" });
-  // Separate forms own each qty so neither is uniquely "the only page qty",
-  // and neither is associated with product-form.
   var formA = createEl("form", {
     id: "a",
     action: "/cart/add",
@@ -472,8 +536,12 @@ function caseE_ambiguousMultipleNoArbitrary() {
     action: "/cart/add",
     class: "product-form",
   });
-  formA.appendChild(qtyA);
-  formB.appendChild(qtyB);
+  formA.appendChild(
+    createEl("input", { name: "quantity", value: "2", type: "number" }),
+  );
+  formB.appendChild(
+    createEl("input", { name: "quantity", value: "5", type: "number" }),
+  );
   page.appendChild(form);
   page.appendChild(uni);
   page.appendChild(formA);
@@ -483,11 +551,11 @@ function caseE_ambiguousMultipleNoArbitrary() {
   assert.strictEqual(
     api.resolveQuantity(uni),
     1,
-    "Case E: ambiguous multiples → no arbitrary selection (fallback 1)",
+    "Case F: genuine ambiguity → no arbitrary first match",
   );
 }
 
-function caseF_noQuantityDefaultsToOne() {
+function caseG_noQuantityDefaultsToOne() {
   var wrap = createEl("div", {});
   var form = createEl("form", {
     id: "product-form",
@@ -499,40 +567,31 @@ function caseF_noQuantityDefaultsToOne() {
   wrap.appendChild(uni);
   installDom(wrap);
   var api = loadProductApi();
-  assert.strictEqual(
-    api.resolveQuantity(uni),
-    1,
-    "Case F: missing quantity → 1",
-  );
+  assert.strictEqual(api.resolveQuantity(uni), 1, "Case G: no quantity → 1");
 }
 
-function caseG_invalidExplicitFailsSafely() {
+function caseH_invalidExplicitFailsSafely() {
   var wrap = createEl("div", {});
-  var form = createEl("form", {
-    id: "product-form",
-    action: "/cart/add",
-    class: "product-form",
-  });
-  var qty = createEl("input", { name: "quantity", value: "0" });
+  var qty = createEl("input", { name: "quantity", value: "0", type: "number" });
   var uni = createEl("div", { "data-uni-product-button": "" });
-  form.appendChild(qty);
-  form.appendChild(uni);
-  wrap.appendChild(form);
+  wrap.appendChild(qty);
+  wrap.appendChild(uni);
   installDom(wrap);
   var api = loadProductApi();
   assert.strictEqual(
     api.resolveQuantity(uni),
     null,
-    "Case G: invalid explicit quantity → fail safely",
+    "Case H: invalid explicit quantity → fail safely",
   );
 }
 
-caseA_quantityInsideForm();
-caseB_quantityFormLinked();
-caseC_singleGenericPageQuantity();
-caseD_multipleCandidatesOneAssociated();
-caseE_ambiguousMultipleNoArbitrary();
-caseF_noQuantityDefaultsToOne();
-caseG_invalidExplicitFailsSafely();
+caseA_oneGenericCandidate();
+caseB_quantityOutsideFormOnlyGeneric();
+caseC_staleFormOneDoesNotBeatCurrentTwo();
+caseD_multipleOneAssociated();
+caseE_visibleBeatsHiddenDuplicate();
+caseF_genuineAmbiguityNoArbitrary();
+caseG_noQuantityDefaultsToOne();
+caseH_invalidExplicitFailsSafely();
 
 console.log("check-uni-hardening: OK");
