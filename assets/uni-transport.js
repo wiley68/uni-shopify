@@ -20,8 +20,8 @@
   // =============================================================================
   var CP_BASE_URL = "https://uni.avalonbg.com";
 
-  // Temporary DEV/TEST echo path (same for Product + Cart). Replace for production CP routes.
-  var CP_ECHO_PATH = "/shopify/product-test";
+  // Production CP routes
+  var CP_ECHO_PATH = "/shopify/financing";
 
   function resolveCpConfig(baseUrl) {
     if (typeof baseUrl !== "string" || !baseUrl.trim()) return null;
