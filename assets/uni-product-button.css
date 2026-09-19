@@ -82,8 +82,11 @@
   position: relative;
   z-index: 1;
   display: flex;
-  width: min(90vw, 800px);
-  height: min(90vh, 800px);
+  box-sizing: border-box;
+  width: 900px;
+  height: 760px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   overflow: hidden;
   border-radius: 14px;
   background: #fff;
@@ -119,8 +122,6 @@
 }
 
 @media (max-width: 768px) {
-  .uni-product-modal__dialog { width: 100%; height: 100%; border-radius: 0; }
-
   .uni-product-button {
     gap: 0.5rem;
     padding: 0.55rem 0.85rem;

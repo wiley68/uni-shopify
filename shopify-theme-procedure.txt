@@ -1,21 +1,37 @@
 Работеща процедура за промени по Shopify тема (пример: test-avalon.myshopify.com)
 
-UniCredit Shopify integration files:
+UniCredit Shopify integration files (Product phase):
 
 snippets/
   uni-product-button.liquid
+    - renders only when settings.uni_status is on and settings.uni_unicid is set
+    - Custom Liquid: {% render 'uni-product-button', product: product %}
+    - passes shop.domain, shop.permanent_domain, shop.currency, product context
 
 assets/
   uni-product-button.css
+    - Product button styling (approved Phase 3A design)
+    - Modal shell ~900x760, max-width/max-height: calc(100vw/vh - 32px)
   uni-product-button.js
+    - resolves selected variant via {Shopify.routes.root}variants/{id}.js
+    - POST form-targets iframe to temporary DEV/TEST CP echo:
+      https://uni.avalonbg.com/shopify/product-test
+      (NOT a production endpoint)
+    - payload: source, shop_domain, shop_permanent_domain, unicid, currency,
+      products (JSON string array), total_price_cents
+    - overlay click does NOT close; X / Escape / postMessage uni:close do
+    - accepts postMessage { type: 'uni:close' } only from
+      origin https://uni.avalonbg.com
 
 config/settings_schema.json
   UniCredit settings block
 
+No Cart integration in this phase.
 No Checkout integration.
 No Shopify app.
 No Shopify order creation.
-Business flow is handled by UniCredit CP iframe.
+No CP calculator / SmartUCF / order creation in theme.
+Business flow is handled by UniCredit CP iframe (production CP URL later).
 
 1) Папка за проекта
    - Създай папка за магазина (напр. test-avalon/)
@@ -109,9 +125,13 @@ Business flow is handled by UniCredit CP iframe.
    - Правим промени в настройките от Theme settings/УниКредит покупки на Кредит
    - Добавяме блок там къде искаме (продуктова страница). Използваме Custom Liquid
    - Custom Liquid: {% render 'uni-product-button', product: product %}
-   - Product бутонът изисква договорения UniCredit CP Product URL в
-     assets/uni-product-button.js (UNI_CP_PRODUCT_URL). До задаването му frontend-ът
-     отказва безопасно и не изпраща продуктови данни.
+   - Задай Theme setting uni_unicid (без него бутонът не се рендерира /
+     JS не POST-ва към CP).
+   - Product runtime: click → modal → iframe POST към temporary DEV/TEST
+     echo https://uni.avalonbg.com/shopify/product-test
+     (смени с production CP URL в по-късна фаза; НЕ е production endpoint).
+   - Провери echo: source=product, domains, unicid, currency, products JSON,
+     total_price_cents. Close от CP изпраща postMessage uni:close.
    - Cart интеграцията не е част от Product фазата.
 
 7) Push като unpublished (safe deploy)
