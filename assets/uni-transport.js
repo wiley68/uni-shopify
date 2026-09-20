@@ -36,8 +36,39 @@
     "online.ucfin.bg": true,
   };
 
-  /** Exact SmartUCF Process 1 start path (trailing slash normalized). */
-  var SMARTUCF_START_PATH = "/sucf-online/Request/Start/";
+  /** Exact SmartUCF Process 1 start path prefix (session id is one final segment). */
+  var SMARTUCF_START_PREFIX = "/sucf-online/Request/Start/";
+
+  /** Dev-only console diagnostics for financing postMessage handoff. */
+  function transportDebug(message, detail) {
+    try {
+      if (typeof console === "undefined" || typeof console.debug !== "function") {
+        return;
+      }
+      if (detail === undefined) console.debug("[uni-transport]", message);
+      else console.debug("[uni-transport]", message, detail);
+    } catch (_ignored) {}
+  }
+
+  function safeBankUrlDiag(raw) {
+    try {
+      var parsed = new URL(String(raw == null ? "" : raw).trim());
+      var path = parsed.pathname || "";
+      var pattern = "(unexpected path)";
+      if (path.indexOf(SMARTUCF_START_PREFIX) === 0) {
+        var rest = path.slice(SMARTUCF_START_PREFIX.length);
+        if (rest.endsWith("/")) rest = rest.slice(0, -1);
+        if (rest && rest.indexOf("/") === -1) {
+          pattern = SMARTUCF_START_PREFIX + "<session>";
+        } else {
+          pattern = SMARTUCF_START_PREFIX + "<invalid-session>";
+        }
+      }
+      return { host: parsed.hostname, pathPattern: pattern };
+    } catch (_ignored) {
+      return { host: "(invalid)", pathPattern: "(invalid)" };
+    }
+  }
 
   function resolveCpConfig(baseUrl) {
     if (typeof baseUrl !== "string" || !baseUrl.trim()) return null;
@@ -126,7 +157,8 @@
 
   /**
    * Validate SmartUCF start URL from uni:bank-redirect.
-   * Requires https + exact trusted host + exact start path (query allowed).
+   * Requires https + exact trusted host + prefix /sucf-online/Request/Start/
+   * + exactly one non-empty final session segment (query allowed).
    * @returns {string|null} href safe for top-level navigation
    */
   function validateSmartUcfUrl(raw) {
@@ -136,9 +168,16 @@
       if (parsed.protocol !== "https:") return null;
       if (parsed.username || parsed.password) return null;
       if (!SMARTUCF_HOSTS[parsed.hostname]) return null;
+
       var path = parsed.pathname || "";
-      var normalized = path.endsWith("/") ? path : path + "/";
-      if (normalized !== SMARTUCF_START_PATH) return null;
+      if (path.indexOf(SMARTUCF_START_PREFIX) !== 0) return null;
+
+      var session = path.slice(SMARTUCF_START_PREFIX.length);
+      if (session.endsWith("/")) session = session.slice(0, -1);
+      if (!session) return null;
+      if (session.indexOf("/") !== -1) return null;
+      if (session === "." || session === "..") return null;
+
       return parsed.href;
     } catch (_ignored) {
       return null;
@@ -302,12 +341,25 @@
    * Never navigates the iframe. Invalid destination → ignore (no navigation).
    */
   function handleBankRedirect(rawUrl) {
+    var urlOk = false;
     var validated = validateSmartUcfUrl(rawUrl);
-    if (!validated) return;
+    urlOk = !!validated;
+    transportDebug("bank redirect URL check", {
+      urlOk: urlOk,
+      diag: safeBankUrlDiag(rawUrl),
+    });
+    if (!validated) {
+      transportDebug("bank redirect ignored: invalid destination");
+      return;
+    }
 
-    // Terminate modal lifecycle first so no ghost ready-timeout/error can fire.
+    // Capture before teardown — do not rely on state after modal close.
+    var destination = validated;
+
     clearReadyTimeout();
     state.readyReceived = true;
+    transportDebug("bank redirect accepted");
+
     if (typeof state.closeImpl === "function") {
       closeActive();
     } else if (state.flow) {
@@ -316,26 +368,62 @@
       resetContainmentState();
     }
 
-    global.location.assign(validated);
+    transportDebug("bank redirect navigation started");
+    global.location.assign(destination);
   }
 
   function onMessage(event) {
     if (!isConfigured()) return;
-    if (event.origin !== CP_ORIGIN) return;
-    var data = event.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) return;
-    if (!state.iframe || !state.iframe.contentWindow) return;
-    if (event.source !== state.iframe.contentWindow) return;
 
-    if (data.type === "uni:ready") {
+    var data = event.data;
+    var type =
+      data && typeof data === "object" && !Array.isArray(data) ? data.type : null;
+    if (
+      type !== "uni:ready" &&
+      type !== "uni:close" &&
+      type !== "uni:bank-redirect"
+    ) {
+      return;
+    }
+
+    var originOk = event.origin === CP_ORIGIN;
+    var sourceOk = !!(
+      state.iframe &&
+      state.iframe.contentWindow &&
+      event.source === state.iframe.contentWindow
+    );
+
+    transportDebug("financing message", {
+      type: type,
+      origin: event.origin,
+      expectedOrigin: CP_ORIGIN,
+      originOk: originOk,
+      sourceOk: sourceOk,
+    });
+
+    if (!originOk) {
+      if (type === "uni:bank-redirect") {
+        transportDebug("bank redirect ignored: wrong origin");
+      }
+      return;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return;
+    if (!sourceOk) {
+      if (type === "uni:bank-redirect") {
+        transportDebug("bank redirect ignored: wrong source");
+      }
+      return;
+    }
+
+    if (type === "uni:ready") {
       revealIframeOnReady();
       return;
     }
-    if (data.type === "uni:bank-redirect") {
+    if (type === "uni:bank-redirect") {
       handleBankRedirect(data.url);
       return;
     }
-    if (data.type === "uni:close") {
+    if (type === "uni:close") {
       closeActive();
     }
   }

@@ -142,11 +142,13 @@ assert.ok(transportJs.indexOf("uni:ready") !== -1, "ready message handled");
 assert.ok(transportJs.indexOf("READY_TIMEOUT_MS") !== -1, "timeout constant");
 assert.ok(transportJs.indexOf("10000") !== -1, "10s timeout");
 assert.ok(
-  transportJs.indexOf("event.origin !== CP_ORIGIN") !== -1,
+  transportJs.indexOf("event.origin === CP_ORIGIN") !== -1 ||
+    transportJs.indexOf("event.origin !== CP_ORIGIN") !== -1,
   "ready/close origin check",
 );
 assert.ok(
-  transportJs.indexOf("event.source !== state.iframe.contentWindow") !== -1,
+  transportJs.indexOf("event.source === state.iframe.contentWindow") !== -1 ||
+    transportJs.indexOf("event.source !== state.iframe.contentWindow") !== -1,
   "ready/close source check",
 );
 assert.ok(
@@ -231,30 +233,58 @@ assert.ok(
 );
 assert.ok(typeof T.validateSmartUcfUrl === "function");
 (function assertSmartUcfUrlValidation() {
-  var okProd =
-    "https://online.ucfin.bg/sucf-online/Request/Start/?token=abc";
-  var okTest =
-    "https://onlinetest.ucfin.bg/sucf-online/Request/Start/";
-  assert.ok(T.validateSmartUcfUrl(okProd), "prod SmartUCF URL accepted");
-  assert.ok(T.validateSmartUcfUrl(okTest), "test SmartUCF URL accepted");
+  assert.ok(
+    T.validateSmartUcfUrl(
+      "https://onlinetest.ucfin.bg/sucf-online/Request/Start/ABC123",
+    ),
+    "test SmartUCF URL with session accepted",
+  );
+  assert.ok(
+    T.validateSmartUcfUrl(
+      "https://online.ucfin.bg/sucf-online/Request/Start/ABC123",
+    ),
+    "prod SmartUCF URL with session accepted",
+  );
+  assert.ok(
+    T.validateSmartUcfUrl(
+      "https://online.ucfin.bg/sucf-online/Request/Start/95F5DC/?x=1",
+    ),
+    "session + query accepted",
+  );
   assert.strictEqual(
-    T.validateSmartUcfUrl("http://online.ucfin.bg/sucf-online/Request/Start/"),
+    T.validateSmartUcfUrl(
+      "http://onlinetest.ucfin.bg/sucf-online/Request/Start/ABC123",
+    ),
     null,
     "http rejected",
   );
   assert.strictEqual(
     T.validateSmartUcfUrl(
-      "https://evil.example/sucf-online/Request/Start/",
+      "https://evil.example/sucf-online/Request/Start/ABC123",
     ),
     null,
     "foreign host rejected",
   );
   assert.strictEqual(
     T.validateSmartUcfUrl(
-      "https://online.ucfin.bg.evil.com/sucf-online/Request/Start/",
+      "https://onlinetest.ucfin.bg.evil.example/sucf-online/Request/Start/ABC123",
     ),
     null,
     "suffix-host trick rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl(
+      "https://onlinetest.ucfin.bg/sucf-online/Request/Start/",
+    ),
+    null,
+    "missing session segment rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl(
+      "https://onlinetest.ucfin.bg/sucf-online/Request/Start/A/B",
+    ),
+    null,
+    "deeper path rejected",
   );
   assert.strictEqual(
     T.validateSmartUcfUrl("https://online.ucfin.bg/other/path"),
@@ -269,6 +299,20 @@ assert.ok(typeof T.validateSmartUcfUrl === "function");
   assert.strictEqual(T.validateSmartUcfUrl(""), null, "empty rejected");
   assert.strictEqual(T.validateSmartUcfUrl(null), null, "null rejected");
 })();
+
+assert.ok(
+  transportJs.indexOf("SMARTUCF_START_PREFIX") !== -1 ||
+    transportJs.indexOf("/sucf-online/Request/Start/") !== -1,
+  "SmartUCF start prefix still present",
+);
+assert.ok(
+  transportJs.indexOf("bank redirect ignored: invalid destination") !== -1,
+  "invalid destination diagnostic present",
+);
+assert.ok(
+  transportJs.indexOf("bank redirect accepted") !== -1,
+  "accepted diagnostic present",
+);
 
 /* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
