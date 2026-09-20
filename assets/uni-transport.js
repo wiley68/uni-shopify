@@ -337,15 +337,14 @@
   }
 
   /**
-   * Trusted uni:bank-redirect → close modal lifecycle → top-level SmartUCF navigation.
+   * Trusted uni:bank-redirect → top-level SmartUCF navigation.
+   * Keep Step 3 / modal visible until the browser leaves (no storefront flash).
    * Never navigates the iframe. Invalid destination → ignore (no navigation).
    */
   function handleBankRedirect(rawUrl) {
-    var urlOk = false;
     var validated = validateSmartUcfUrl(rawUrl);
-    urlOk = !!validated;
     transportDebug("bank redirect URL check", {
-      urlOk: urlOk,
+      urlOk: !!validated,
       diag: safeBankUrlDiag(rawUrl),
     });
     if (!validated) {
@@ -353,23 +352,27 @@
       return;
     }
 
-    // Capture before teardown — do not rely on state after modal close.
     var destination = validated;
 
+    // Non-visual only: suppress ghost timeout/error. Do NOT close/remove modal.
     clearReadyTimeout();
     state.readyReceived = true;
     transportDebug("bank redirect accepted");
 
-    if (typeof state.closeImpl === "function") {
-      closeActive();
-    } else if (state.flow) {
-      end(state.flow);
-    } else {
-      resetContainmentState();
+    try {
+      transportDebug("bank redirect navigation started");
+      global.location.assign(destination);
+    } catch (_ignored) {
+      // Synchronous assign failure only — fall back to normal close lifecycle.
+      transportDebug("bank redirect navigation failed; falling back to close");
+      if (typeof state.closeImpl === "function") {
+        closeActive();
+      } else if (state.flow) {
+        end(state.flow);
+      } else {
+        resetContainmentState();
+      }
     }
-
-    transportDebug("bank redirect navigation started");
-    global.location.assign(destination);
   }
 
   function onMessage(event) {

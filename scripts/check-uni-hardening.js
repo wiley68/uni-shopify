@@ -313,6 +313,37 @@ assert.ok(
   transportJs.indexOf("bank redirect accepted") !== -1,
   "accepted diagnostic present",
 );
+(function assertBankRedirectKeepsModalVisible() {
+  var start = transportJs.indexOf("function handleBankRedirect");
+  assert.ok(start !== -1, "handleBankRedirect present");
+  var end = transportJs.indexOf("\n  function onMessage", start);
+  assert.ok(end !== -1, "handleBankRedirect bounded");
+  var body = transportJs.slice(start, end);
+  assert.ok(
+    body.indexOf("location.assign") !== -1,
+    "bank redirect calls top-level location.assign",
+  );
+  assert.ok(
+    body.indexOf("clearReadyTimeout()") !== -1,
+    "bank redirect suppresses ready timeout",
+  );
+  assert.ok(
+    body.indexOf("readyReceived = true") !== -1,
+    "bank redirect marks redirect accepted",
+  );
+  assert.ok(
+    transportJs.indexOf("Keep Step 3 / modal visible") !== -1,
+    "bank redirect documents keep-modal-visible behavior",
+  );
+  // Happy path must not visually close before navigate; closeActive only in catch.
+  var assignAt = body.indexOf("location.assign");
+  var closeBeforeAssign = body.lastIndexOf("closeActive()", assignAt);
+  var catchAt = body.indexOf("catch");
+  assert.ok(
+    closeBeforeAssign === -1 || (catchAt !== -1 && closeBeforeAssign > catchAt),
+    "bank redirect must not call visual closeActive before location.assign",
+  );
+})();
 
 /* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
