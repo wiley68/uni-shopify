@@ -1,6 +1,7 @@
 /**
  * Shared UniCredit page-level transport lifecycle.
- * Owns: active flow, active iframe, body scroll lock, Escape, postMessage close.
+ * Owns: active flow, active iframe, body scroll lock, Escape, postMessage close/ready,
+ * initial iframe containment until trusted uni:ready.
  *
  * CP base URL is the single deployment source of truth for all environments.
  * Temporary DEV/TEST echo path — replace before production release.
@@ -22,6 +23,12 @@
 
   // Production CP routes
   var CP_ECHO_PATH = "/shopify/financing";
+
+  /** Bounded wait for trusted CP uni:ready before safe parent error. */
+  var READY_TIMEOUT_MS = 10000;
+
+  var SAFE_LOAD_ERROR =
+    "Финансирането временно не може да бъде заредено.\nМоля, опитайте отново.";
 
   function resolveCpConfig(baseUrl) {
     if (typeof baseUrl !== "string" || !baseUrl.trim()) return null;
@@ -53,8 +60,11 @@
     flow: null,
     modalId: null,
     iframe: null,
+    frameWrap: null,
     previousOverflow: "",
     closeImpl: null,
+    readyReceived: false,
+    readyTimeoutId: null,
   };
 
   function shopifyRoot() {
@@ -117,6 +127,77 @@
     return state.iframe;
   }
 
+  function clearReadyTimeout() {
+    if (state.readyTimeoutId != null) {
+      clearTimeout(state.readyTimeoutId);
+      state.readyTimeoutId = null;
+    }
+  }
+
+  function resetContainmentState() {
+    clearReadyTimeout();
+    state.frameWrap = null;
+    state.readyReceived = false;
+  }
+
+  function statusClassForFlow() {
+    return state.flow === "cart"
+      ? "uni-cart-modal__status"
+      : "uni-product-modal__status";
+  }
+
+  function ensureLoadingStatus(wrap) {
+    if (!wrap) return;
+    var status = wrap.querySelector("[data-uni-frame-status]");
+    if (!status) {
+      status = document.createElement("div");
+      status.setAttribute("data-uni-frame-status", "");
+      status.className = statusClassForFlow();
+      wrap.appendChild(status);
+    }
+    status.setAttribute("role", "status");
+    status.textContent = "Зареждане…";
+  }
+
+  /**
+   * Safe parent-side error: iframe stays hidden; no upstream HTML / CP URLs.
+   */
+  function showSafeLoadError() {
+    clearReadyTimeout();
+    if (state.iframe) {
+      state.iframe.hidden = true;
+      state.iframe.setAttribute("aria-hidden", "true");
+    }
+    if (!state.frameWrap) return;
+    var status = state.frameWrap.querySelector("[data-uni-frame-status]");
+    if (!status) {
+      status = document.createElement("div");
+      status.setAttribute("data-uni-frame-status", "");
+      status.className = statusClassForFlow();
+      state.frameWrap.appendChild(status);
+    }
+    status.setAttribute("role", "alert");
+    status.textContent = SAFE_LOAD_ERROR;
+  }
+
+  /**
+   * Reveal iframe only after trusted uni:ready (origin + source validated).
+   * Does not recreate/reload iframe or reset financing session.
+   */
+  function revealIframeOnReady() {
+    if (!state.flow || state.readyReceived) return;
+    state.readyReceived = true;
+    clearReadyTimeout();
+    if (state.frameWrap) {
+      var status = state.frameWrap.querySelector("[data-uni-frame-status]");
+      if (status) status.remove();
+    }
+    if (state.iframe) {
+      state.iframe.hidden = false;
+      state.iframe.removeAttribute("aria-hidden");
+    }
+  }
+
   /**
    * Begin exclusive Uni flow. Locks body scroll once.
    * @returns {boolean} false if another flow is already active or CP config invalid
@@ -125,6 +206,7 @@
     if (!isConfigured()) return false;
     if (state.flow) return false;
     if (flow !== "product" && flow !== "cart") return false;
+    resetContainmentState();
     state.flow = flow;
     state.modalId = options && options.modalId ? options.modalId : null;
     state.closeImpl =
@@ -137,18 +219,41 @@
     return true;
   }
 
-  function setIframe(iframe) {
+  /**
+   * Register active iframe and arm containment until trusted uni:ready.
+   * options.wrap = modal frame-wrap element hosting loading/error UI.
+   * iframe load is NOT authority to reveal.
+   */
+  function setIframe(iframe, options) {
     if (!state.flow) return;
+    clearReadyTimeout();
+    state.readyReceived = false;
     state.iframe = iframe || null;
+    state.frameWrap =
+      options && options.wrap ? options.wrap : state.frameWrap;
+
+    if (!iframe) return;
+
+    iframe.hidden = true;
+    iframe.setAttribute("aria-hidden", "true");
+    ensureLoadingStatus(state.frameWrap);
+
+    state.readyTimeoutId = setTimeout(function () {
+      state.readyTimeoutId = null;
+      if (!state.flow || state.readyReceived) return;
+      showSafeLoadError();
+    }, READY_TIMEOUT_MS);
   }
 
   /**
    * End the active flow and restore scroll. No-op if flow mismatch (inactive close).
+   * Clears ready timeout so close-while-loading leaves no ghost error.
    * @returns {boolean}
    */
   function end(flow) {
     if (state.flow !== flow) return false;
     document.body.style.overflow = state.previousOverflow;
+    resetContainmentState();
     state.flow = null;
     state.modalId = null;
     state.iframe = null;
@@ -167,10 +272,16 @@
     if (event.origin !== CP_ORIGIN) return;
     var data = event.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) return;
-    if (data.type !== "uni:close") return;
     if (!state.iframe || !state.iframe.contentWindow) return;
     if (event.source !== state.iframe.contentWindow) return;
-    closeActive();
+
+    if (data.type === "uni:ready") {
+      revealIframeOnReady();
+      return;
+    }
+    if (data.type === "uni:close") {
+      closeActive();
+    }
   }
 
   function onKeydown(event) {
@@ -188,6 +299,7 @@
     CP_BASE_URL: CP_BASE_URL,
     CP_ORIGIN: CP_ORIGIN,
     CP_URL: CP_URL,
+    READY_TIMEOUT_MS: READY_TIMEOUT_MS,
     isConfigured: isConfigured,
     shopifyRoot: shopifyRoot,
     validateCurrency: validateCurrency,

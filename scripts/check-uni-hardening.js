@@ -136,6 +136,58 @@ assert.ok(cartJs.indexOf("/shopify/product-test") === -1);
 assert.ok(productJs.indexOf("isConfigured") !== -1);
 assert.ok(cartJs.indexOf("isConfigured") !== -1);
 
+/* Phase 8.2 iframe containment — transport owns ready/timeout; load ≠ reveal */
+var transportJs = fs.readFileSync(transportPath, "utf8");
+assert.ok(transportJs.indexOf("uni:ready") !== -1, "ready message handled");
+assert.ok(transportJs.indexOf("READY_TIMEOUT_MS") !== -1, "timeout constant");
+assert.ok(transportJs.indexOf("10000") !== -1, "10s timeout");
+assert.ok(
+  transportJs.indexOf("event.origin !== CP_ORIGIN") !== -1,
+  "ready/close origin check",
+);
+assert.ok(
+  transportJs.indexOf("event.source !== state.iframe.contentWindow") !== -1,
+  "ready/close source check",
+);
+assert.ok(
+  transportJs.indexOf("revealIframeOnReady") !== -1,
+  "reveal only via trusted ready",
+);
+assert.ok(
+  transportJs.indexOf("showSafeLoadError") !== -1,
+  "safe timeout error state",
+);
+assert.ok(
+  transportJs.indexOf("iframe.hidden = true") !== -1,
+  "iframe hidden before ready",
+);
+assert.ok(
+  transportJs.indexOf("clearReadyTimeout") !== -1,
+  "timeout cleared on close/ready",
+);
+assert.strictEqual(T.READY_TIMEOUT_MS, 10000);
+assert.ok(
+  productJs.indexOf("setIframe(iframe, { wrap: wrap })") !== -1,
+  "product arms containment via transport",
+);
+assert.ok(
+  cartJs.indexOf("setIframe(iframe, { wrap: wrap })") !== -1,
+  "cart arms containment via transport",
+);
+assert.ok(
+  productJs.indexOf("status.remove()") === -1,
+  "product must not reveal on iframe load",
+);
+assert.ok(
+  cartJs.indexOf("status.remove()") === -1,
+  "cart must not reveal on iframe load",
+);
+assert.ok(
+  transportJs.indexOf("Финансирането временно не може да бъде заредено") !==
+    -1,
+  "safe timeout copy",
+);
+
 /* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
   productJs.indexOf(

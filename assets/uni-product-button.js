@@ -485,6 +485,9 @@
   function closeModal() {
     if (transport.getFlow() !== "product") return;
 
+    // End flow first so ready timeout cannot fire into a closing modal.
+    transport.end("product");
+
     var modal = document.getElementById(MODAL_ID);
     if (modal) {
       modal.classList.remove("is-open");
@@ -492,7 +495,6 @@
       var wrap = modal.querySelector(".uni-product-modal__frame-wrap");
       if (wrap) wrap.replaceChildren();
     }
-    transport.end("product");
   }
 
   function postToIframe(payload) {
@@ -511,27 +513,20 @@
     var modal = ensureModal();
     var wrap = modal.querySelector(".uni-product-modal__frame-wrap");
     wrap.innerHTML =
-      '<div class="uni-product-modal__status" role="status">Зареждане…</div>';
+      '<div class="uni-product-modal__status" data-uni-frame-status role="status">Зареждане…</div>';
 
     var iframe = document.createElement("iframe");
     iframe.name = IFRAME_NAME;
     iframe.className = "uni-product-modal__frame";
     iframe.title = "UniCredit финансиране";
     iframe.allow = "payment";
-
-    var submitted = false;
-    iframe.addEventListener("load", function () {
-      if (!submitted) return;
-      var status = wrap.querySelector(".uni-product-modal__status");
-      if (status) status.remove();
-    });
-    iframe.addEventListener("error", function () {
-      wrap.innerHTML =
-        '<div class="uni-product-modal__status" role="alert">Услугата не може да бъде заредена. Моля, опитайте отново.</div>';
-    });
+    iframe.hidden = true;
+    iframe.setAttribute("aria-hidden", "true");
 
     wrap.appendChild(iframe);
-    transport.setIframe(iframe);
+    // Containment: iframe stays hidden until trusted uni:ready (transport).
+    // iframe load is NOT authority to reveal.
+    transport.setIframe(iframe, { wrap: wrap });
     modal.classList.add("is-open");
     modal.setAttribute("aria-hidden", "false");
 
@@ -550,7 +545,6 @@
     });
 
     document.body.appendChild(form);
-    submitted = true;
     form.submit();
     form.remove();
   }

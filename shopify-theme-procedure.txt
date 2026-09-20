@@ -91,10 +91,17 @@ Modal lifecycle:
   Only one UniCredit modal may be active at a time.
   Body scroll lock/unlock is owned by the shared active flow.
   Closing an inactive modal must not alter page scroll.
-  postMessage uni:close accepted only when:
+  Iframe containment (Phase 8.2 theme-side):
+    modal opens → loading UI → iframe created hidden
+    iframe load is NOT authority to reveal
+    trusted postMessage uni:ready → clear timeout, hide loading, show iframe
+    no uni:ready within READY_TIMEOUT_MS (10000) → iframe stays hidden, safe parent error
+  postMessage uni:ready / uni:close accepted only when:
     event.origin === new URL(CP_BASE_URL).origin   // derived from central config
-    event.data.type === "uni:close"
+    event.data.type === "uni:ready" | "uni:close"
     event.source === active iframe.contentWindow
+  Close (X / Escape / uni:close) at loading|ready|timeout clears timeout, resets iframe,
+  restores scroll, releases Product/Cart lock. Re-open starts a fresh attempt.
 
 ================================================================================
 CP BASE URL — SINGLE SOURCE OF TRUTH (deployment packaging)

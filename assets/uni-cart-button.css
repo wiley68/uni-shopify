@@ -134,17 +134,46 @@
   border: 0;
 }
 
+.uni-cart-modal__frame[hidden] {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .uni-cart-modal__status {
   position: absolute;
   inset: 0;
   z-index: 2;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.75rem;
   padding: 2rem;
   background: #fff;
   color: #333;
   text-align: center;
+  white-space: pre-line;
+}
+
+.uni-cart-modal__status[role="status"]::before {
+  content: "";
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 3px solid #ddd;
+  border-top-color: #666;
+  border-radius: 50%;
+  animation: uni-frame-spin 0.8s linear infinite;
+}
+
+@keyframes uni-frame-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 768px) {
