@@ -385,6 +385,23 @@
     }
   }
 
+  /**
+   * Read Liquid-rendered Collection IDs for this product.
+   * Missing/invalid → [] — never fail financing for empty collections.
+   * Values are untrusted browser shopping context.
+   */
+  function readProductCollectionIds(container) {
+    var node = container.querySelector("[data-uni-collection-ids]");
+    if (!node) return [];
+    try {
+      return transport.normalizeCollectionIds(
+        JSON.parse(node.textContent || "[]"),
+      );
+    } catch (_ignored) {
+      return [];
+    }
+  }
+
   function buildPayload(container, variant, quantity, currency) {
     var unitPrice = variant.price;
     var lineTotal = unitPrice * quantity;
@@ -412,6 +429,8 @@
         quantity: quantity,
         unit_price_cents: unitPrice,
         total_price_cents: lineTotal,
+        // Untrusted shopping context for CP KOP filters — not auth/settlement.
+        collection_ids: readProductCollectionIds(container),
       },
     ];
 
@@ -613,6 +632,10 @@
       resolveQuantity: resolveQuantity,
       findProductForm: findProductForm,
       findProductSection: findProductSection,
+      readProductCollectionIds: readProductCollectionIds,
+      normalizeCollectionIds: function (raw) {
+        return transport.normalizeCollectionIds(raw);
+      },
     };
   }
 })();

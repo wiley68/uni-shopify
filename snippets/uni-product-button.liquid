@@ -27,6 +27,15 @@
     <script src="{{ 'uni-product-button.js' | asset_url }}" defer></script>
 
     <script type="application/json" data-uni-option-names>{{ product.options | json }}</script>
+    {% comment %}
+      collection_ids: browser-supplied, untrusted shopping context for CP KOP filters.
+      Numeric Shopify Collection IDs only (product.collections).
+    {% endcomment %}
+    <script type="application/json" data-uni-collection-ids>[
+{%- for collection in product.collections -%}
+{{ collection.id }}{% unless forloop.last %},{% endunless %}
+{%- endfor -%}
+]</script>
     <button type="button" class="uni-product-button">
       <span class="uni-product-button__label">{{ uni_btn_text | escape }}</span>
       <img

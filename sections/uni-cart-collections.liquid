@@ -1,0 +1,37 @@
+{% comment %}
+  UniCredit cart → collection membership transport helper.
+
+  Infrastructure only — no visual UI. Rendered via Shopify Section Rendering API
+  at Cart financing click time so membership reflects the current Ajax cart.
+
+  Output: JSON map { "<product_id>": [<collection_id>, ...], ... }
+  collection_ids are browser-supplied, untrusted shopping context — not
+  authentication, authorization, merchant identity, banking, or settlement authority.
+{% endcomment %}
+<script type="application/json" data-uni-cart-collections>{
+{%- assign uni_seen = '|' -%}
+{%- assign uni_first = true -%}
+{%- for item in cart.items -%}
+  {%- assign uni_marker = '|' | append: item.product_id | append: '|' -%}
+  {%- unless uni_seen contains uni_marker -%}
+    {%- if uni_first -%}
+      {%- assign uni_first = false -%}
+    {%- else -%}
+      ,
+    {%- endif -%}
+    "{{ item.product_id }}":[
+      {%- for collection in item.product.collections -%}
+        {{ collection.id }}{% unless forloop.last %},{% endunless %}
+      {%- endfor -%}
+    ]
+    {%- assign uni_seen = uni_seen | append: item.product_id | append: '|' -%}
+  {%- endunless -%}
+{%- endfor -%}
+}</script>
+
+{% schema %}
+{
+  "name": "UniCredit Cart Collections",
+  "settings": []
+}
+{% endschema %}

@@ -75,6 +75,36 @@
     return normalized;
   }
 
+  /**
+   * Normalize Shopify Collection IDs for CP transport.
+   * Browser-supplied, untrusted shopping context — not auth/settlement authority.
+   * @returns {number[]} positive safe integers only, deduped, invalid → dropped
+   */
+  function normalizeCollectionIds(raw) {
+    if (!Array.isArray(raw)) return [];
+    var seen = Object.create(null);
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var value = raw[i];
+      var id = null;
+      if (typeof value === "number") {
+        if (Number.isSafeInteger(value) && value > 0) id = value;
+      } else {
+        var text = String(value == null ? "" : value).trim();
+        if (/^\d+$/.test(text)) {
+          var number = Number(text);
+          if (Number.isSafeInteger(number) && number > 0) id = number;
+        }
+      }
+      if (!id) continue;
+      var key = String(id);
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push(id);
+    }
+    return out;
+  }
+
   function isActive() {
     return state.flow !== null;
   }
@@ -161,6 +191,7 @@
     isConfigured: isConfigured,
     shopifyRoot: shopifyRoot,
     validateCurrency: validateCurrency,
+    normalizeCollectionIds: normalizeCollectionIds,
     isActive: isActive,
     getFlow: getFlow,
     getIframe: getIframe,

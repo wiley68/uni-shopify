@@ -9,9 +9,18 @@ var fs = require("fs");
 var path = require("path");
 var vm = require("vm");
 
+function assertDeepEqual(actual, expected, message) {
+  assert.strictEqual(
+    JSON.stringify(actual),
+    JSON.stringify(expected),
+    message || undefined,
+  );
+}
+
 var root = path.join(__dirname, "..");
 var transportPath = path.join(root, "assets", "uni-transport.js");
 var productPath = path.join(root, "assets", "uni-product-button.js");
+var cartPath = path.join(root, "assets", "uni-cart-button.js");
 
 /* -------------------------------------------------------------------------- */
 /* Transport / config checks                                                  */
@@ -69,10 +78,7 @@ assert.strictEqual(T.isActive(), false);
 assert.strictEqual(sandbox.document.body.style.overflow, "");
 
 var productJs = fs.readFileSync(productPath, "utf8");
-var cartJs = fs.readFileSync(
-  path.join(root, "assets", "uni-cart-button.js"),
-  "utf8",
-);
+var cartJs = fs.readFileSync(cartPath, "utf8");
 
 assert.ok(
   productJs.indexOf("document.querySelector('[name=\"quantity\"]')") === -1,
@@ -85,20 +91,46 @@ assert.ok(productJs.indexOf("resolvePresentmentCurrency") !== -1);
 assert.ok(productJs.indexOf("dataset.currency") === -1);
 
 assert.ok(cartJs.indexOf("fetchStableCart") !== -1);
+assert.ok(cartJs.indexOf("fetchCartContextForFinancing") !== -1);
+assert.ok(cartJs.indexOf("fetchCartCollectionMap") !== -1);
+assert.ok(cartJs.indexOf("uni-cart-collections") !== -1);
+assert.ok(cartJs.indexOf("collection_ids") !== -1);
 assert.ok(cartJs.indexOf("validateCurrency(cart.currency)") !== -1);
 assert.ok(cartJs.indexOf("dataset.currency") === -1);
 assert.ok(cartJs.indexOf("cart/clear") === -1);
 
+assert.ok(productJs.indexOf("data-uni-collection-ids") !== -1);
+assert.ok(productJs.indexOf("collection_ids") !== -1);
+assert.ok(productJs.indexOf("readProductCollectionIds") !== -1);
+
+assert.ok(
+  fs.existsSync(path.join(root, "sections", "uni-cart-collections.liquid")),
+  "cart collections section required",
+);
 assert.ok(fs.existsSync(path.join(root, "assets", "uni-transport.js")));
+
+assert.ok(typeof T.normalizeCollectionIds === "function");
+assertDeepEqual(T.normalizeCollectionIds([10, 20, 30]), [10, 20, 30]);
+assertDeepEqual(T.normalizeCollectionIds([10, 20, 10]), [10, 20]);
+assertDeepEqual(
+  T.normalizeCollectionIds([10, "20", 0, -1, "x", 1.5, null, "30"]),
+  [10, 20, 30],
+);
+assertDeepEqual(T.normalizeCollectionIds(null), []);
+assertDeepEqual(T.normalizeCollectionIds({}), []);
+assertDeepEqual(T.normalizeCollectionIds("10"), []);
+assertDeepEqual(T.normalizeCollectionIds([]), []);
 
 assert.ok(T.isConfigured(), "CP config must resolve");
 assert.strictEqual(T.CP_ORIGIN, new URL(T.CP_BASE_URL).origin);
 assert.strictEqual(
   T.CP_URL,
-  new URL(T.CP_BASE_URL).origin + "/shopify/product-test",
+  new URL(T.CP_BASE_URL).origin + "/shopify/financing",
 );
 assert.ok(productJs.indexOf("uni.avalonbg.com") === -1);
 assert.ok(cartJs.indexOf("uni.avalonbg.com") === -1);
+assert.ok(productJs.indexOf("/shopify/financing") === -1);
+assert.ok(cartJs.indexOf("/shopify/financing") === -1);
 assert.ok(productJs.indexOf("/shopify/product-test") === -1);
 assert.ok(cartJs.indexOf("/shopify/product-test") === -1);
 assert.ok(productJs.indexOf("isConfigured") !== -1);
@@ -593,5 +625,276 @@ caseE_visibleBeatsHiddenDuplicate();
 caseF_genuineAmbiguityNoArbitrary();
 caseG_noQuantityDefaultsToOne();
 caseH_invalidExplicitFailsSafely();
+
+/* -------------------------------------------------------------------------- */
+/* Collection IDs — Product + Cart fixtures                                   */
+/* -------------------------------------------------------------------------- */
+
+function loadCartApi() {
+  delete sandbox.__UniCartTestApi;
+  sandbox.__UNI_ENABLE_CART_TEST_API = true;
+  sandbox.__UniTransport = T;
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  sandbox.DOMParser = function DOMParser() {
+    this.parseFromString = function (html) {
+      var match = String(html).match(
+        /data-uni-cart-collections[^>]*>\s*([\s\S]*?)\s*<\/script>/i,
+      );
+      var text = match ? match[1] : "";
+      var node = {
+        textContent: text,
+      };
+      return {
+        querySelector: function (selector) {
+          if (selector === "[data-uni-cart-collections]") {
+            return match ? node : null;
+          }
+          return null;
+        },
+      };
+    };
+  };
+  vm.runInNewContext(fs.readFileSync(cartPath, "utf8"), sandbox, {
+    filename: "uni-cart-button.js",
+  });
+  assert.ok(sandbox.__UniCartTestApi, "cart test API exported");
+  return sandbox.__UniCartTestApi;
+}
+
+function caseProductCollectionsPresent() {
+  var wrap = createEl("div", {});
+  var uni = createEl("div", { "data-uni-product-button": "" });
+  var json = createEl("script", {
+    type: "application/json",
+    "data-uni-collection-ids": "",
+  });
+  json.textContent = "[10,20,30]";
+  uni.appendChild(json);
+  wrap.appendChild(uni);
+  // Extend createEl for script textContent if needed
+  json.getAttribute = function (name) {
+    return this.attrs[name] != null ? String(this.attrs[name]) : null;
+  };
+  uni.querySelector = function (selector) {
+    if (selector === "[data-uni-collection-ids]") return json;
+    return null;
+  };
+  installDom(wrap);
+  var api = loadProductApi();
+  assertDeepEqual(
+    api.readProductCollectionIds(uni),
+    [10, 20, 30],
+    "Product: collections 10,20,30",
+  );
+}
+
+function caseProductCollectionsDedupe() {
+  var wrap = createEl("div", {});
+  var uni = createEl("div", { "data-uni-product-button": "" });
+  var json = createEl("script", {
+    type: "application/json",
+    "data-uni-collection-ids": "",
+  });
+  json.textContent = "[10,20,10]";
+  uni.querySelector = function (selector) {
+    if (selector === "[data-uni-collection-ids]") return json;
+    return null;
+  };
+  wrap.appendChild(uni);
+  installDom(wrap);
+  var api = loadProductApi();
+  assertDeepEqual(
+    api.normalizeCollectionIds([10, 20, 10]),
+    [10, 20],
+    "Product: duplicate IDs removed",
+  );
+  assertDeepEqual(
+    api.readProductCollectionIds(uni),
+    [10, 20],
+    "Product: Liquid duplicates normalized",
+  );
+}
+
+function caseProductCollectionsInvalidAndEmpty() {
+  assertDeepEqual(
+    T.normalizeCollectionIds([0, -5, "abc", 1.2, NaN, Infinity]),
+    [],
+    "Invalid IDs removed → []",
+  );
+  var wrap = createEl("div", {});
+  var uni = createEl("div", { "data-uni-product-button": "" });
+  uni.querySelector = function () {
+    return null;
+  };
+  wrap.appendChild(uni);
+  installDom(wrap);
+  var api = loadProductApi();
+  assertDeepEqual(
+    api.readProductCollectionIds(uni),
+    [],
+    "Product: no collections → []",
+  );
+}
+
+function caseCartOneProductCollections() {
+  var api = loadCartApi();
+  var html =
+    '<div id="shopify-section-uni-cart-collections">' +
+    '<script type="application/json" data-uni-cart-collections>' +
+    '{"100":[10,20]}' +
+    "</script></div>";
+  var map = api.parseCollectionMapHtml(html);
+  assertDeepEqual(map["100"], [10, 20]);
+  var line = api.normalizeCartItem(
+    {
+      product_id: 100,
+      product_title: "A",
+      handle: "a",
+      variant_id: 1001,
+      variant_title: "Default",
+      quantity: 1,
+      final_price: 10000,
+      final_line_price: 10000,
+      options_with_values: [],
+    },
+    map,
+  );
+  assert.strictEqual(line.product_id, 100);
+  assertDeepEqual(line.collection_ids, [10, 20]);
+}
+
+function caseCartTwoProductsOwnCollections() {
+  var api = loadCartApi();
+  var map = api.parseCollectionMapHtml(
+    '<script type="application/json" data-uni-cart-collections>' +
+      '{"100":[10,20],"200":[30]}</script>',
+  );
+  var line100 = api.normalizeCartItem(
+    {
+      product_id: 100,
+      product_title: "A",
+      handle: "a",
+      variant_id: 1,
+      variant_title: "",
+      quantity: 1,
+      final_price: 1000,
+      final_line_price: 1000,
+    },
+    map,
+  );
+  var line200 = api.normalizeCartItem(
+    {
+      product_id: 200,
+      product_title: "B",
+      handle: "b",
+      variant_id: 2,
+      variant_title: "",
+      quantity: 1,
+      final_price: 2000,
+      final_line_price: 2000,
+    },
+    map,
+  );
+  assertDeepEqual(line100.collection_ids, [10, 20]);
+  assertDeepEqual(line200.collection_ids, [30]);
+}
+
+function caseCartSameProductMultipleVariants() {
+  var api = loadCartApi();
+  var map = { 100: [10, 20] };
+  var lineA = api.normalizeCartItem(
+    {
+      product_id: 100,
+      product_title: "A",
+      handle: "a",
+      variant_id: 11,
+      variant_title: "S",
+      quantity: 1,
+      final_price: 1000,
+      final_line_price: 1000,
+    },
+    map,
+  );
+  var lineB = api.normalizeCartItem(
+    {
+      product_id: 100,
+      product_title: "A",
+      handle: "a",
+      variant_id: 22,
+      variant_title: "L",
+      quantity: 2,
+      final_price: 1000,
+      final_line_price: 2000,
+    },
+    map,
+  );
+  assertDeepEqual(lineA.collection_ids, [10, 20]);
+  assertDeepEqual(lineB.collection_ids, [10, 20]);
+}
+
+function caseCartMissingMapEntry() {
+  var api = loadCartApi();
+  var map = { 100: [10, 20] };
+  var line = api.normalizeCartItem(
+    {
+      product_id: 999,
+      product_title: "X",
+      handle: "x",
+      variant_id: 9,
+      variant_title: "",
+      quantity: 1,
+      final_price: 500,
+      final_line_price: 500,
+    },
+    map,
+  );
+  assertDeepEqual(
+    line.collection_ids,
+    [],
+    "Missing map entry → [] (no unrelated IDs)",
+  );
+  assertDeepEqual(
+    api.collectionIdsForProduct({}, 100),
+    [],
+    "Empty map → []",
+  );
+  assertDeepEqual(
+    api.parseCollectionMapHtml("<div>no json</div>"),
+    {},
+    "Bad HTML → empty map",
+  );
+}
+
+function caseCartClickUsesSectionRenderingNotInitialLiquid() {
+  assert.ok(
+    cartJs.indexOf("?sections=") !== -1,
+    "Cart collections use Section Rendering API",
+  );
+  assert.ok(
+    cartJs.indexOf("fetchCartCollectionMap") !== -1,
+    "Collections fetched at financing time",
+  );
+  assert.ok(
+    cartJs.indexOf("fetchCartContextForFinancing") !== -1,
+    "Cart+collections consistency wrapper present",
+  );
+  var section = fs.readFileSync(
+    path.join(root, "sections", "uni-cart-collections.liquid"),
+    "utf8",
+  );
+  assert.ok(section.indexOf("data-uni-cart-collections") !== -1);
+  assert.ok(section.indexOf("cart.items") !== -1);
+  assert.ok(section.indexOf("item.product.collections") !== -1);
+}
+
+caseProductCollectionsPresent();
+caseProductCollectionsDedupe();
+caseProductCollectionsInvalidAndEmpty();
+caseCartOneProductCollections();
+caseCartTwoProductsOwnCollections();
+caseCartSameProductMultipleVariants();
+caseCartMissingMapEntry();
+caseCartClickUsesSectionRenderingNotInitialLiquid();
 
 console.log("check-uni-hardening: OK");
