@@ -97,7 +97,7 @@
   display: flex;
   box-sizing: border-box;
   width: 900px;
-  height: 760px;
+  height: 720px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
   overflow: hidden;
