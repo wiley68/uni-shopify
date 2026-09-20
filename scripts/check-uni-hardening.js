@@ -188,6 +188,88 @@ assert.ok(
   "safe timeout copy",
 );
 
+/* Phase 9.1 — trusted uni:bank-redirect → top-level SmartUCF (not iframe) */
+assert.ok(
+  transportJs.indexOf("uni:bank-redirect") !== -1,
+  "bank-redirect message handled",
+);
+assert.ok(
+  transportJs.indexOf("validateSmartUcfUrl") !== -1,
+  "SmartUCF URL validation exists",
+);
+assert.ok(
+  transportJs.indexOf("location.assign") !== -1,
+  "top-level window.location.assign exists",
+);
+assert.ok(
+  transportJs.indexOf("handleBankRedirect") !== -1,
+  "bank redirect handler present",
+);
+assert.ok(
+  transportJs.indexOf("onlinetest.ucfin.bg") !== -1 &&
+    transportJs.indexOf("online.ucfin.bg") !== -1,
+  "trusted SmartUCF hosts listed",
+);
+assert.ok(
+  transportJs.indexOf("/sucf-online/Request/Start/") !== -1,
+  "expected SmartUCF start path",
+);
+assert.ok(
+  productJs.indexOf("uni:bank-redirect") === -1 &&
+    cartJs.indexOf("uni:bank-redirect") === -1,
+  "bank-redirect must stay in shared transport only",
+);
+assert.ok(
+  productJs.indexOf("location.assign") === -1 &&
+    cartJs.indexOf("location.assign") === -1,
+  "Product/Cart must not navigate for SmartUCF",
+);
+assert.ok(
+  /iframe\.(src|location)\s*=/.test(transportJs) === false &&
+    transportJs.indexOf("contentWindow.location") === -1,
+  "iframe must not be used for SmartUCF navigation",
+);
+assert.ok(typeof T.validateSmartUcfUrl === "function");
+(function assertSmartUcfUrlValidation() {
+  var okProd =
+    "https://online.ucfin.bg/sucf-online/Request/Start/?token=abc";
+  var okTest =
+    "https://onlinetest.ucfin.bg/sucf-online/Request/Start/";
+  assert.ok(T.validateSmartUcfUrl(okProd), "prod SmartUCF URL accepted");
+  assert.ok(T.validateSmartUcfUrl(okTest), "test SmartUCF URL accepted");
+  assert.strictEqual(
+    T.validateSmartUcfUrl("http://online.ucfin.bg/sucf-online/Request/Start/"),
+    null,
+    "http rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl(
+      "https://evil.example/sucf-online/Request/Start/",
+    ),
+    null,
+    "foreign host rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl(
+      "https://online.ucfin.bg.evil.com/sucf-online/Request/Start/",
+    ),
+    null,
+    "suffix-host trick rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl("https://online.ucfin.bg/other/path"),
+    null,
+    "wrong path rejected",
+  );
+  assert.strictEqual(
+    T.validateSmartUcfUrl("javascript:alert(1)"),
+    null,
+    "javascript: rejected",
+  );
+  assert.strictEqual(T.validateSmartUcfUrl(""), null, "empty rejected");
+  assert.strictEqual(T.validateSmartUcfUrl(null), null, "null rejected");
+})();
+
 /* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
   productJs.indexOf(

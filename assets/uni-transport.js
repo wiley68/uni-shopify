@@ -30,6 +30,15 @@
   var SAFE_LOAD_ERROR =
     "Финансирането временно не може да бъде заредено.\nМоля, опитайте отново.";
 
+  /** Exact SmartUCF hosts allowed for top-level bank redirect. */
+  var SMARTUCF_HOSTS = {
+    "onlinetest.ucfin.bg": true,
+    "online.ucfin.bg": true,
+  };
+
+  /** Exact SmartUCF Process 1 start path (trailing slash normalized). */
+  var SMARTUCF_START_PATH = "/sucf-online/Request/Start/";
+
   function resolveCpConfig(baseUrl) {
     if (typeof baseUrl !== "string" || !baseUrl.trim()) return null;
     try {
@@ -113,6 +122,27 @@
       out.push(id);
     }
     return out;
+  }
+
+  /**
+   * Validate SmartUCF start URL from uni:bank-redirect.
+   * Requires https + exact trusted host + exact start path (query allowed).
+   * @returns {string|null} href safe for top-level navigation
+   */
+  function validateSmartUcfUrl(raw) {
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    try {
+      var parsed = new URL(raw.trim());
+      if (parsed.protocol !== "https:") return null;
+      if (parsed.username || parsed.password) return null;
+      if (!SMARTUCF_HOSTS[parsed.hostname]) return null;
+      var path = parsed.pathname || "";
+      var normalized = path.endsWith("/") ? path : path + "/";
+      if (normalized !== SMARTUCF_START_PATH) return null;
+      return parsed.href;
+    } catch (_ignored) {
+      return null;
+    }
   }
 
   function isActive() {
@@ -267,6 +297,28 @@
     state.closeImpl();
   }
 
+  /**
+   * Trusted uni:bank-redirect → close modal lifecycle → top-level SmartUCF navigation.
+   * Never navigates the iframe. Invalid destination → ignore (no navigation).
+   */
+  function handleBankRedirect(rawUrl) {
+    var validated = validateSmartUcfUrl(rawUrl);
+    if (!validated) return;
+
+    // Terminate modal lifecycle first so no ghost ready-timeout/error can fire.
+    clearReadyTimeout();
+    state.readyReceived = true;
+    if (typeof state.closeImpl === "function") {
+      closeActive();
+    } else if (state.flow) {
+      end(state.flow);
+    } else {
+      resetContainmentState();
+    }
+
+    global.location.assign(validated);
+  }
+
   function onMessage(event) {
     if (!isConfigured()) return;
     if (event.origin !== CP_ORIGIN) return;
@@ -277,6 +329,10 @@
 
     if (data.type === "uni:ready") {
       revealIframeOnReady();
+      return;
+    }
+    if (data.type === "uni:bank-redirect") {
+      handleBankRedirect(data.url);
       return;
     }
     if (data.type === "uni:close") {
@@ -304,6 +360,7 @@
     shopifyRoot: shopifyRoot,
     validateCurrency: validateCurrency,
     normalizeCollectionIds: normalizeCollectionIds,
+    validateSmartUcfUrl: validateSmartUcfUrl,
     isActive: isActive,
     getFlow: getFlow,
     getIframe: getIframe,
