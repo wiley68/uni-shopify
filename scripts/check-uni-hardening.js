@@ -79,6 +79,10 @@ assert.strictEqual(sandbox.document.body.style.overflow, "");
 
 var productJs = fs.readFileSync(productPath, "utf8");
 var cartJs = fs.readFileSync(cartPath, "utf8");
+var productLiquid = fs.readFileSync(
+  path.join(root, "snippets", "uni-product-button.liquid"),
+  "utf8",
+);
 
 assert.ok(
   productJs.indexOf("document.querySelector('[name=\"quantity\"]')") === -1,
@@ -86,8 +90,10 @@ assert.ok(
 assert.ok(
   productJs.indexOf("document.querySelector(\n      'form[action*") === -1,
 );
-assert.ok(productJs.indexOf("assertVariantBelongsToProduct") !== -1);
-assert.ok(productJs.indexOf("resolvePresentmentCurrency") !== -1);
+assert.ok(productJs.indexOf("payload_version: 2") !== -1);
+assert.ok(productJs.indexOf('source: "product"') !== -1);
+assert.ok(productJs.indexOf("variant_id: variantId") !== -1);
+assert.ok(productJs.indexOf("quantity: quantity") !== -1);
 assert.ok(productJs.indexOf("dataset.currency") === -1);
 
 assert.ok(cartJs.indexOf("fetchStableCart") !== -1);
@@ -99,9 +105,46 @@ assert.ok(cartJs.indexOf("validateCurrency(cart.currency)") !== -1);
 assert.ok(cartJs.indexOf("dataset.currency") === -1);
 assert.ok(cartJs.indexOf("cart/clear") === -1);
 
-assert.ok(productJs.indexOf("data-uni-collection-ids") !== -1);
-assert.ok(productJs.indexOf("collection_ids") !== -1);
-assert.ok(productJs.indexOf("readProductCollectionIds") !== -1);
+[
+  "unit_price_cents",
+  "total_price_cents",
+  "currency",
+  "collection_ids",
+  "product_title",
+  "product_handle",
+  "variant_title",
+  "selected_options",
+  "product_id",
+  "products",
+].forEach(function (field) {
+  assert.strictEqual(
+    productJs.indexOf(field),
+    -1,
+    "Product v2 must not contain authority field: " + field,
+  );
+});
+assert.strictEqual(productLiquid.indexOf("data-uni-option-names"), -1);
+assert.strictEqual(productLiquid.indexOf("data-uni-collection-ids"), -1);
+assert.strictEqual(productLiquid.indexOf("data-product-id"), -1);
+assert.strictEqual(productLiquid.indexOf("data-product-title"), -1);
+assert.strictEqual(productLiquid.indexOf("data-product-handle"), -1);
+
+[
+  "product_id",
+  "product_title",
+  "product_handle",
+  "variant_id",
+  "variant_title",
+  "selected_options",
+  "quantity",
+  "unit_price_cents",
+  "total_price_cents",
+  "collection_ids",
+  "currency",
+  "products",
+].forEach(function (field) {
+  assert.ok(cartJs.indexOf(field) !== -1, "Cart legacy field retained: " + field);
+});
 
 assert.ok(
   fs.existsSync(path.join(root, "sections", "uni-cart-collections.liquid")),
@@ -924,8 +967,38 @@ caseF_genuineAmbiguityNoArbitrary();
 caseG_noQuantityDefaultsToOne();
 caseH_invalidExplicitFailsSafely();
 
+function caseProductPayloadV2IsMinimal() {
+  var api = loadProductApi();
+  var payload = api.buildPayload(
+    {
+      dataset: {
+        unicid: "merchant-1",
+        shopDomain: "shop.example",
+        shopPermanentDomain: "shop.myshopify.com",
+      },
+    },
+    123456,
+    3,
+  );
+  assertDeepEqual(Object.keys(payload).sort(), [
+    "payload_version",
+    "quantity",
+    "shop_domain",
+    "shop_permanent_domain",
+    "source",
+    "unicid",
+    "variant_id",
+  ]);
+  assert.strictEqual(payload.payload_version, 2);
+  assert.strictEqual(payload.source, "product");
+  assert.strictEqual(payload.variant_id, 123456);
+  assert.strictEqual(payload.quantity, 3);
+}
+
+caseProductPayloadV2IsMinimal();
+
 /* -------------------------------------------------------------------------- */
-/* Collection IDs — Product + Cart fixtures                                   */
+/* Collection IDs — Cart legacy fixtures                                     */
 /* -------------------------------------------------------------------------- */
 
 function loadCartApi() {
@@ -958,81 +1031,6 @@ function loadCartApi() {
   });
   assert.ok(sandbox.__UniCartTestApi, "cart test API exported");
   return sandbox.__UniCartTestApi;
-}
-
-function caseProductCollectionsPresent() {
-  var wrap = createEl("div", {});
-  var uni = createEl("div", { "data-uni-product-button": "" });
-  var json = createEl("script", {
-    type: "application/json",
-    "data-uni-collection-ids": "",
-  });
-  json.textContent = "[10,20,30]";
-  uni.appendChild(json);
-  wrap.appendChild(uni);
-  // Extend createEl for script textContent if needed
-  json.getAttribute = function (name) {
-    return this.attrs[name] != null ? String(this.attrs[name]) : null;
-  };
-  uni.querySelector = function (selector) {
-    if (selector === "[data-uni-collection-ids]") return json;
-    return null;
-  };
-  installDom(wrap);
-  var api = loadProductApi();
-  assertDeepEqual(
-    api.readProductCollectionIds(uni),
-    [10, 20, 30],
-    "Product: collections 10,20,30",
-  );
-}
-
-function caseProductCollectionsDedupe() {
-  var wrap = createEl("div", {});
-  var uni = createEl("div", { "data-uni-product-button": "" });
-  var json = createEl("script", {
-    type: "application/json",
-    "data-uni-collection-ids": "",
-  });
-  json.textContent = "[10,20,10]";
-  uni.querySelector = function (selector) {
-    if (selector === "[data-uni-collection-ids]") return json;
-    return null;
-  };
-  wrap.appendChild(uni);
-  installDom(wrap);
-  var api = loadProductApi();
-  assertDeepEqual(
-    api.normalizeCollectionIds([10, 20, 10]),
-    [10, 20],
-    "Product: duplicate IDs removed",
-  );
-  assertDeepEqual(
-    api.readProductCollectionIds(uni),
-    [10, 20],
-    "Product: Liquid duplicates normalized",
-  );
-}
-
-function caseProductCollectionsInvalidAndEmpty() {
-  assertDeepEqual(
-    T.normalizeCollectionIds([0, -5, "abc", 1.2, NaN, Infinity]),
-    [],
-    "Invalid IDs removed → []",
-  );
-  var wrap = createEl("div", {});
-  var uni = createEl("div", { "data-uni-product-button": "" });
-  uni.querySelector = function () {
-    return null;
-  };
-  wrap.appendChild(uni);
-  installDom(wrap);
-  var api = loadProductApi();
-  assertDeepEqual(
-    api.readProductCollectionIds(uni),
-    [],
-    "Product: no collections → []",
-  );
 }
 
 function caseCartOneProductCollections() {
@@ -1182,9 +1180,6 @@ function caseCartClickUsesSectionRenderingNotInitialLiquid() {
   assert.ok(section.indexOf("item.product.collections") !== -1);
 }
 
-caseProductCollectionsPresent();
-caseProductCollectionsDedupe();
-caseProductCollectionsInvalidAndEmpty();
 caseCartOneProductCollections();
 caseCartTwoProductsOwnCollections();
 caseCartSameProductMultipleVariants();

@@ -301,147 +301,15 @@
     return positiveInteger(container.dataset.initialVariantId);
   }
 
-  async function fetchVariant(variantId) {
-    var response = await fetch(
-      transport.shopifyRoot() +
-        "variants/" +
-        encodeURIComponent(String(variantId)) +
-        ".js",
-      {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      },
-    );
-    if (!response.ok) throw new Error("variant-request-failed");
-    var variant = await response.json();
-    if (positiveInteger(variant.id) !== variantId)
-      throw new Error("variant-mismatch");
-    if (!Number.isSafeInteger(variant.price) || variant.price <= 0)
-      throw new Error("invalid-price");
-    if (variant.available === false) throw new Error("variant-unavailable");
-    return variant;
-  }
-
-  /**
-   * Prove variant belongs to the Liquid product via products/{handle}.js.
-   */
-  async function assertVariantBelongsToProduct(
-    productId,
-    productHandle,
-    variantId,
-  ) {
-    if (!productHandle) throw new Error("missing-handle");
-    var response = await fetch(
-      transport.shopifyRoot() +
-        "products/" +
-        encodeURIComponent(productHandle) +
-        ".js",
-      {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      },
-    );
-    if (!response.ok) throw new Error("product-request-failed");
-    var product = await response.json();
-    if (positiveInteger(product.id) !== productId)
-      throw new Error("product-id-mismatch");
-    var variants = Array.isArray(product.variants) ? product.variants : [];
-    var belongs = variants.some(function (entry) {
-      return positiveInteger(entry.id) === variantId;
-    });
-    if (!belongs) throw new Error("variant-not-in-product");
-  }
-
-  /**
-   * Presentment currency matching Ajax monetary values.
-   * Prefer Shopify.currency.active; fallback cart.js currency.
-   */
-  async function resolvePresentmentCurrency() {
-    var fromShopify =
-      window.Shopify &&
-      window.Shopify.currency &&
-      window.Shopify.currency.active;
-    var validated = transport.validateCurrency(fromShopify);
-    if (validated) return validated;
-
-    var response = await fetch(transport.shopifyRoot() + "cart.js", {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) throw new Error("currency-request-failed");
-    var cart = await response.json();
-    validated = transport.validateCurrency(cart.currency);
-    if (validated) return validated;
-    throw new Error("invalid-currency");
-  }
-
-  function optionNames(container) {
-    var node = container.querySelector("[data-uni-option-names]");
-    try {
-      var names = JSON.parse((node && node.textContent) || "[]");
-      return Array.isArray(names) ? names : [];
-    } catch (_ignored) {
-      return [];
-    }
-  }
-
-  /**
-   * Read Liquid-rendered Collection IDs for this product.
-   * Missing/invalid → [] — never fail financing for empty collections.
-   * Values are untrusted browser shopping context.
-   */
-  function readProductCollectionIds(container) {
-    var node = container.querySelector("[data-uni-collection-ids]");
-    if (!node) return [];
-    try {
-      return transport.normalizeCollectionIds(
-        JSON.parse(node.textContent || "[]"),
-      );
-    } catch (_ignored) {
-      return [];
-    }
-  }
-
-  function buildPayload(container, variant, quantity, currency) {
-    var unitPrice = variant.price;
-    var lineTotal = unitPrice * quantity;
-    if (!Number.isSafeInteger(lineTotal)) throw new Error("invalid-total");
-
-    var names = optionNames(container);
-    var values = Array.isArray(variant.options) ? variant.options : [];
-    var productId = positiveInteger(container.dataset.productId);
-    var variantId = positiveInteger(variant.id);
-    if (!productId || !variantId) throw new Error("invalid-ids");
-
-    var products = [
-      {
-        product_id: productId,
-        product_title: container.dataset.productTitle || "",
-        product_handle: container.dataset.productHandle || "",
-        variant_id: variantId,
-        variant_title: typeof variant.title === "string" ? variant.title : "",
-        selected_options: values.map(function (value, index) {
-          return {
-            name: names[index] || "Option " + (index + 1),
-            value: String(value),
-          };
-        }),
-        quantity: quantity,
-        unit_price_cents: unitPrice,
-        total_price_cents: lineTotal,
-        // Untrusted shopping context for CP KOP filters — not auth/settlement.
-        collection_ids: readProductCollectionIds(container),
-      },
-    ];
-
+  function buildPayload(container, variantId, quantity) {
     return {
+      payload_version: 2,
       source: "product",
+      unicid: container.dataset.unicid || "",
       shop_domain: container.dataset.shopDomain || window.location.hostname,
       shop_permanent_domain: container.dataset.shopPermanentDomain || "",
-      unicid: container.dataset.unicid || "",
-      currency: currency,
-      products: JSON.stringify(products),
-      total_price_cents: lineTotal,
+      variant_id: variantId,
+      quantity: quantity,
     };
   }
 
@@ -565,22 +433,13 @@
         return;
       }
 
-      var productId = positiveInteger(container.dataset.productId);
-      var productHandle = container.dataset.productHandle || "";
-      if (!productId || !productHandle)
-        throw new Error("invalid-product-context");
-
       var variantId = resolveVariantId(container);
       if (!variantId) throw new Error("invalid-variant");
 
       var quantity = resolveQuantity(container);
       if (!quantity) throw new Error("invalid-quantity");
 
-      var variant = await fetchVariant(variantId);
-      await assertVariantBelongsToProduct(productId, productHandle, variantId);
-
-      var currency = await resolvePresentmentCurrency();
-      var payload = buildPayload(container, variant, quantity, currency);
+      var payload = buildPayload(container, variantId, quantity);
 
       if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
@@ -624,12 +483,10 @@
   if (typeof window !== "undefined" && window.__UNI_ENABLE_PRODUCT_TEST_API) {
     window.__UniProductTestApi = {
       resolveQuantity: resolveQuantity,
+      resolveVariantId: resolveVariantId,
+      buildPayload: buildPayload,
       findProductForm: findProductForm,
       findProductSection: findProductSection,
-      readProductCollectionIds: readProductCollectionIds,
-      normalizeCollectionIds: function (raw) {
-        return transport.normalizeCollectionIds(raw);
-      },
     };
   }
 })();
