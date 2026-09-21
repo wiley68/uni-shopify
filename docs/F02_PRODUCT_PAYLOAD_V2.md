@@ -21,9 +21,8 @@ authoritatively reconstructed and validated by CP. The theme still resolves the
 currently selected variant and customer-selected integer quantity, but performs
 no financing price calculation or Product catalog lookup.
 
-Cart remains on its existing legacy payload. Its products, totals, currency,
-collection Section Rendering lookup, and redirect-time cart clearing are not
-changed by F02-3.
+F02-5 subsequently moved Cart to its own six-field v2 capability contract. That
+later Cart change does not alter this Product contract.
 
 ## Runtime verification
 

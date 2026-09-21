@@ -4,40 +4,18 @@
 FROZEN PRODUCT/CART CONTRACT (frontend → CP)
 ================================================================================
 
-Top-level POST fields (exact):
-  source
-  shop_domain
-  shop_permanent_domain
-  unicid
-  currency
-  products
-  total_price_cents
+Product POST fields (exact):
+  payload_version, source, unicid, shop_domain, shop_permanent_domain,
+  variant_id, quantity
 
-source:
-  product | cart
+Cart POST fields (exact):
+  payload_version, source, unicid, shop_domain, shop_permanent_domain,
+  cart_identity
 
-products:
-  JSON string containing an array of items
-
-products[] item fields (exact):
-  product_id
-  product_title
-  product_handle
-  variant_id
-  variant_title
-  selected_options   // [{ "name": "...", "value": "..." }, ...]
-  quantity
-  unit_price_cents
-  total_price_cents
-  collection_ids     // [number, ...] Shopify Collection IDs; missing/invalid → []
-
-collection_ids:
-  Browser-supplied, untrusted shopping context for later CP KOP filters.
-  NOT authority for auth, merchant identity, banking, settlement, or SmartUCF.
-  Product: Liquid product.collections rendered into data-uni-collection-ids.
-  Cart: Section Rendering API section "uni-cart-collections" at click time
-        (current cart, not initial page Liquid). Soft-fail → [] per line.
-  Normalize: array only, positive safe integers, dedupe; never invent IDs.
+payload_version = 2. Product source = product; Cart source = cart.
+Cart identity is the unmodified cart.token from the final stable cart.js
+snapshot. CP reconstructs all Cart lines, quantities, catalog data,
+collections, money, and currency authoritatively through Storefront Cart lookup.
 
 Trust boundary:
   ALL frontend fields are UNTRUSTED.
@@ -73,18 +51,8 @@ Product quantity follows this policy:
   - never arbitrary first match across multiple product contexts
 Product price/ownership uses Ajax APIs; variant id prefers form[name=id].
 
-Currency:
-  currency = presentment currency matching Ajax monetary values
-  Cart: cart.currency from cart.js (NOT Liquid shop.currency)
-  Product: Shopify.currency.active, fallback cart.js currency
-  Invalid/missing presentment currency → fail safely, no POST
-
-Discounts (Cart):
-  unit_price_cents     = final_price (fallback price)
-  line total_price_cents = final_line_price (fallback line_price, else unit*qty)
-  top-level total_price_cents = cart.total_price (authoritative)
-  sum(products[].total_price_cents) MAY differ from top-level total_price_cents
-  when cart-level discounts apply — this is expected, not invalid.
+Product currency and pricing are reconstructed by CP. Cart currency, discounts,
+line totals, and final total are reconstructed by CP from Storefront authority.
 
 Modal lifecycle:
   Product and Cart share one page-level active Uni flow (window.__UniTransport).
@@ -144,13 +112,6 @@ snippets/
     - Custom Liquid (cart page): {% render 'uni-cart-button' %}
     - requires settings.uni_status + settings.uni_unicid
     - Liquid cart is NOT authoritative; JS uses cart.js on click
-
-sections/
-  uni-cart-collections.liquid
-    - Infrastructure ONLY (no visual UI, no Theme Editor placement required)
-    - Must be present under theme sections/ so Section Rendering API can load it
-    - JS fetches: GET {shopifyRoot}?sections=uni-cart-collections at Cart click
-    - Renders JSON map { "<product_id>": [<collection_id>, ...] } for current cart
 
 assets/
   uni-transport.js
@@ -251,8 +212,6 @@ No CP calculator / SmartUCF / order creation in theme.
   }
    - Добави snippets - цялото съдържание на папката /snippets в Shopify theme /snippets
    - Добави sections - цялото съдържание на папката /sections в Shopify theme /sections
-     (задължително: uni-cart-collections.liquid — без визуално поставяне в template;
-      нужен е само като файл за Section Rendering API при Cart click)
    - Добави assets - цялото съдържание на папката /assets в Shopify theme /assets
      (включително uni-transport.js)
    - .shopifyignore предпазва local development files от качване чрез Shopify CLI.
@@ -267,8 +226,6 @@ No CP calculator / SmartUCF / order creation in theme.
    - Theme settings → УниКредит → задай uni_unicid
    - Product: {% render 'uni-product-button', product: product %}
    - Cart: {% render 'uni-cart-button' %}
-   - Cart collections helper: upload sections/uni-cart-collections.liquid
-     (no Custom Liquid / section block placement — JS loads it via Section Rendering)
    - Environment package: set CP_BASE_URL in assets/uni-transport.js
      (DEV default https://uni.avalonbg.com). Product/Cart POST to
      {CP_BASE_URL}/shopify/product-test — DEV/TEST echo only.
@@ -287,7 +244,6 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] uni_status on + uni_unicid set in published theme settings
    [ ] Product Custom Liquid render present on product template
    [ ] Cart Custom Liquid render present on cart template
-   [ ] sections/uni-cart-collections.liquid deployed (no UI block placement needed)
    [ ] uni-transport.js + product/cart assets deployed
 
    Product runtime:
@@ -300,14 +256,10 @@ No CP calculator / SmartUCF / order creation in theme.
 
    Cart runtime:
    [ ] cart.js is source of truth (after quantity Ajax updates)
-   [ ] collection map fetched at click via ?sections=uni-cart-collections
-   [ ] cart fingerprint verified against collection fetch (bounded retry)
-   [ ] currency = cart.currency
-   [ ] line discounts use final_*; top-level uses cart.total_price
-   [ ] cart-level discount may make sum(lines) != total — accepted
+   [ ] final stable cart.js snapshot supplies the unmodified cart.token
+   [ ] POST contains only the six Cart payload v2 fields
    [ ] empty cart → no POST
-   [ ] products[].collection_ids present; missing map entry → []
-   [ ] echo: source=cart, N products
+   [ ] no currency, products, totals, quantities, prices, or collection IDs sent
 
    Shared modal:
    [ ] only one Uni modal active (Product vs Cart mutual exclusion)

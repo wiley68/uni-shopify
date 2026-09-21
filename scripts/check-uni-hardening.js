@@ -79,6 +79,10 @@ assert.strictEqual(sandbox.document.body.style.overflow, "");
 
 var productJs = fs.readFileSync(productPath, "utf8");
 var cartJs = fs.readFileSync(cartPath, "utf8");
+var cartPayloadBuilder = cartJs.slice(
+  cartJs.indexOf("function buildPayload"),
+  cartJs.indexOf("function showError"),
+);
 var productLiquid = fs.readFileSync(
   path.join(root, "snippets", "uni-product-button.liquid"),
   "utf8",
@@ -97,11 +101,8 @@ assert.ok(productJs.indexOf("quantity: quantity") !== -1);
 assert.ok(productJs.indexOf("dataset.currency") === -1);
 
 assert.ok(cartJs.indexOf("fetchStableCart") !== -1);
-assert.ok(cartJs.indexOf("fetchCartContextForFinancing") !== -1);
-assert.ok(cartJs.indexOf("fetchCartCollectionMap") !== -1);
-assert.ok(cartJs.indexOf("uni-cart-collections") !== -1);
-assert.ok(cartJs.indexOf("collection_ids") !== -1);
-assert.ok(cartJs.indexOf("validateCurrency(cart.currency)") !== -1);
+assert.ok(cartJs.indexOf("payload_version: 2") !== -1);
+assert.ok(cartJs.indexOf('source: "cart"') !== -1);
 assert.ok(
   cartJs.indexOf("cart_identity: cartIdentity") !== -1,
   "Cart payload includes cart_identity",
@@ -161,12 +162,17 @@ assert.strictEqual(productLiquid.indexOf("data-product-handle"), -1);
   "currency",
   "products",
 ].forEach(function (field) {
-  assert.ok(cartJs.indexOf(field) !== -1, "Cart legacy field retained: " + field);
+  assert.strictEqual(
+    cartPayloadBuilder.indexOf(field),
+    -1,
+    "Cart v2 must not contain authority field: " + field,
+  );
 });
 
-assert.ok(
+assert.strictEqual(
   fs.existsSync(path.join(root, "sections", "uni-cart-collections.liquid")),
-  "cart collections section required",
+  false,
+  "dead Cart collection serialization section removed",
 );
 assert.ok(fs.existsSync(path.join(root, "assets", "uni-transport.js")));
 
@@ -1210,36 +1216,28 @@ function cartPayloadFixture(token) {
     },
     {
       token: token,
-      currency: "BGN",
-      total_price: 1000,
-      items: [
-        {
-          product_id: 100,
-          product_title: "A",
-          handle: "a",
-          variant_id: 1001,
-          variant_title: "Default",
-          quantity: 1,
-          final_price: 1000,
-          final_line_price: 1000,
-        },
-      ],
+      items: [{}],
     },
-    { 100: [10, 20] },
   );
 }
 
 function caseCartPayloadIncludesExactIdentity() {
   var token = "hWNH2Wed-XFI3?key=complete-secret-value";
   var payload = cartPayloadFixture(token);
+  assertDeepEqual(Object.keys(payload).sort(), [
+    "cart_identity",
+    "payload_version",
+    "shop_domain",
+    "shop_permanent_domain",
+    "source",
+    "unicid",
+  ]);
+  assert.strictEqual(payload.payload_version, 2);
   assert.strictEqual(payload.cart_identity, token, "Full cart token is preserved");
   assert.strictEqual(payload.source, "cart");
   assert.strictEqual(payload.unicid, "merchant-1");
   assert.strictEqual(payload.shop_domain, "shop.example");
   assert.strictEqual(payload.shop_permanent_domain, "shop.myshopify.com");
-  assert.strictEqual(payload.currency, "BGN");
-  assert.strictEqual(payload.total_price_cents, 1000);
-  assert.ok(typeof payload.products === "string", "Legacy products retained");
 }
 
 function caseCartPayloadRejectsMissingIdentity() {
@@ -1254,11 +1252,6 @@ function caseCartPayloadRejectsMissingIdentity() {
   });
 }
 
-caseCartOneProductCollections();
-caseCartTwoProductsOwnCollections();
-caseCartSameProductMultipleVariants();
-caseCartMissingMapEntry();
-caseCartClickUsesSectionRenderingNotInitialLiquid();
 caseCartPayloadIncludesExactIdentity();
 caseCartPayloadRejectsMissingIdentity();
 
