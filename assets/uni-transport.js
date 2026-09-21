@@ -39,10 +39,16 @@
   /** Exact SmartUCF Process 1 start path prefix (session id is one final segment). */
   var SMARTUCF_START_PREFIX = "/sucf-online/Request/Start/";
 
+  /** Bounded storefront cart clear before Cart P1 SmartUCF navigation (ms). */
+  var CART_CLEAR_TIMEOUT_MS = 2000;
+
   /** Dev-only console diagnostics for financing postMessage handoff. */
   function transportDebug(message, detail) {
     try {
-      if (typeof console === "undefined" || typeof console.debug !== "function") {
+      if (
+        typeof console === "undefined" ||
+        typeof console.debug !== "function"
+      ) {
         return;
       }
       if (detail === undefined) console.debug("[uni-transport]", message);
@@ -105,6 +111,7 @@
     closeImpl: null,
     readyReceived: false,
     readyTimeoutId: null,
+    bankRedirectHandled: false,
   };
 
   function shopifyRoot() {
@@ -207,6 +214,7 @@
     clearReadyTimeout();
     state.frameWrap = null;
     state.readyReceived = false;
+    state.bankRedirectHandled = false;
   }
 
   function statusClassForFlow() {
@@ -298,8 +306,7 @@
     clearReadyTimeout();
     state.readyReceived = false;
     state.iframe = iframe || null;
-    state.frameWrap =
-      options && options.wrap ? options.wrap : state.frameWrap;
+    state.frameWrap = options && options.wrap ? options.wrap : state.frameWrap;
 
     if (!iframe) return;
 
@@ -337,28 +344,58 @@
   }
 
   /**
-   * Trusted uni:bank-redirect → top-level SmartUCF navigation.
-   * Keep Step 3 / modal visible until the browser leaves (no storefront flash).
-   * Never navigates the iframe. Invalid destination → ignore (no navigation).
+   * Clear current Shopify cart via Ajax Cart API (locale-aware root).
+   * Bounded wait — storefront hygiene only; must never block SmartUCF forever.
    */
-  function handleBankRedirect(rawUrl) {
-    var validated = validateSmartUcfUrl(rawUrl);
-    transportDebug("bank redirect URL check", {
-      urlOk: !!validated,
-      diag: safeBankUrlDiag(rawUrl),
-    });
-    if (!validated) {
-      transportDebug("bank redirect ignored: invalid destination");
-      return;
+  function clearShopifyCartBounded() {
+    var url = shopifyRoot() + "cart/clear.js";
+    var controller = null;
+    try {
+      if (typeof AbortController === "function") {
+        controller = new AbortController();
+      }
+    } catch (_ignored) {
+      controller = null;
     }
 
-    var destination = validated;
+    var timeoutId = null;
+    var timedOut = false;
 
-    // Non-visual only: suppress ghost timeout/error. Do NOT close/remove modal.
-    clearReadyTimeout();
-    state.readyReceived = true;
-    transportDebug("bank redirect accepted");
+    var fetchPromise = fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: controller ? controller.signal : undefined,
+    }).then(function (response) {
+      if (!response.ok) throw new Error("cart-clear-http");
+    });
 
+    var timeoutPromise = new Promise(function (_resolve, reject) {
+      timeoutId = setTimeout(function () {
+        timedOut = true;
+        if (controller) {
+          try {
+            controller.abort();
+          } catch (_abortIgnored) {}
+        }
+        reject(new Error("cart-clear-timeout"));
+      }, CART_CLEAR_TIMEOUT_MS);
+    });
+
+    return Promise.race([fetchPromise, timeoutPromise]).then(
+      function () {
+        if (timeoutId != null) clearTimeout(timeoutId);
+        if (timedOut) throw new Error("cart-clear-timeout");
+      },
+      function (err) {
+        if (timeoutId != null) clearTimeout(timeoutId);
+        if (timedOut) throw new Error("cart-clear-timeout");
+        throw err || new Error("cart-clear-failed");
+      },
+    );
+  }
+
+  function navigateToBank(destination) {
     try {
       transportDebug("bank redirect navigation started");
       global.location.assign(destination);
@@ -375,12 +412,84 @@
     }
   }
 
+  /**
+   * Trusted uni:bank-redirect → top-level SmartUCF navigation.
+   * Keep Step 3 / modal visible until the browser leaves (no storefront flash).
+   * Cart source: clear Shopify cart first (non-blocking hygiene).
+   * Product source: navigate immediately; cart untouched.
+   * Never navigates the iframe. Invalid destination → ignore (no navigation).
+   */
+  function handleBankRedirect(rawUrl) {
+    if (state.bankRedirectHandled) {
+      transportDebug("bank redirect ignored: already handled");
+      return;
+    }
+
+    var validated = validateSmartUcfUrl(rawUrl);
+    transportDebug("bank redirect URL check", {
+      urlOk: !!validated,
+      diag: safeBankUrlDiag(rawUrl),
+    });
+    if (!validated) {
+      transportDebug("bank redirect ignored: invalid destination");
+      return;
+    }
+
+    // Accept once after validation — prevents duplicate clear/navigation.
+    state.bankRedirectHandled = true;
+    var destination = validated;
+    var flow = state.flow;
+
+    // Non-visual only: suppress ghost timeout/error. Do NOT close/remove modal.
+    clearReadyTimeout();
+    state.readyReceived = true;
+    transportDebug("bank redirect accepted");
+
+    function finishNavigate() {
+      navigateToBank(destination);
+    }
+
+    // Product (and any non-cart flow): immediate SmartUCF redirect.
+    if (flow !== "cart") {
+      finishNavigate();
+      return;
+    }
+
+    // Cart P1 success: clear cart, then navigate. Clear failure must not block.
+    transportDebug("cart_clear_started");
+    Promise.resolve()
+      .then(function () {
+        return clearShopifyCartBounded();
+      })
+      .then(function () {
+        transportDebug("cart_clear_success");
+      })
+      .catch(function (err) {
+        var code =
+          err && err.message === "cart-clear-timeout"
+            ? "cart_clear_timeout"
+            : "cart_clear_failed";
+        transportDebug(code);
+      })
+      .then(function () {
+        finishNavigate();
+      })
+      .catch(function () {
+        // Contain any unexpected finishNavigate failure; still attempt assign.
+        try {
+          finishNavigate();
+        } catch (_finalIgnored) {}
+      });
+  }
+
   function onMessage(event) {
     if (!isConfigured()) return;
 
     var data = event.data;
     var type =
-      data && typeof data === "object" && !Array.isArray(data) ? data.type : null;
+      data && typeof data === "object" && !Array.isArray(data)
+        ? data.type
+        : null;
     if (
       type !== "uni:ready" &&
       type !== "uni:close" &&

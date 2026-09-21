@@ -185,8 +185,7 @@ assert.ok(
   "cart must not reveal on iframe load",
 );
 assert.ok(
-  transportJs.indexOf("Финансирането временно не може да бъде заредено") !==
-    -1,
+  transportJs.indexOf("Финансирането временно не може да бъде заредено") !== -1,
   "safe timeout copy",
 );
 
@@ -320,8 +319,9 @@ assert.ok(
   assert.ok(end !== -1, "handleBankRedirect bounded");
   var body = transportJs.slice(start, end);
   assert.ok(
-    body.indexOf("location.assign") !== -1,
-    "bank redirect calls top-level location.assign",
+    body.indexOf("location.assign") !== -1 ||
+      body.indexOf("navigateToBank") !== -1,
+    "bank redirect reaches top-level navigation",
   );
   assert.ok(
     body.indexOf("clearReadyTimeout()") !== -1,
@@ -335,15 +335,104 @@ assert.ok(
     transportJs.indexOf("Keep Step 3 / modal visible") !== -1,
     "bank redirect documents keep-modal-visible behavior",
   );
-  // Happy path must not visually close before navigate; closeActive only in catch.
-  var assignAt = body.indexOf("location.assign");
-  var closeBeforeAssign = body.lastIndexOf("closeActive()", assignAt);
-  var catchAt = body.indexOf("catch");
+  // Happy path must not visually close before navigate; closeActive only in catch/fallback.
+  var navFnStart = transportJs.indexOf("function navigateToBank");
+  assert.ok(navFnStart !== -1, "navigateToBank helper present");
+  var navFnEnd = transportJs.indexOf(
+    "\n  function handleBankRedirect",
+    navFnStart,
+  );
+  if (navFnEnd === -1) {
+    navFnEnd = transportJs.indexOf("\n  function onMessage", navFnStart);
+  }
+  var navBody = transportJs.slice(navFnStart, navFnEnd);
+  var assignAt = navBody.indexOf("location.assign");
+  var closeBeforeAssign = navBody.lastIndexOf("closeActive()", assignAt);
+  var catchAt = navBody.indexOf("catch");
   assert.ok(
     closeBeforeAssign === -1 || (catchAt !== -1 && closeBeforeAssign > catchAt),
     "bank redirect must not call visual closeActive before location.assign",
   );
+  assert.ok(
+    body.indexOf("closeActive()") === -1,
+    "handleBankRedirect itself must not call closeActive on happy path",
+  );
 })();
+
+/* Phase 11.1 — Cart P1 success: clear Shopify cart before SmartUCF (Product untouched) */
+assert.ok(
+  transportJs.indexOf("cart/clear.js") !== -1,
+  "Shopify cart clear endpoint used",
+);
+assert.ok(
+  transportJs.indexOf('shopifyRoot() + "cart/clear.js"') !== -1 ||
+    transportJs.indexOf("shopifyRoot() + 'cart/clear.js'") !== -1,
+  "locale-aware Shopify.routes.root used for cart clear",
+);
+assert.ok(
+  transportJs.indexOf("clearShopifyCartBounded") !== -1,
+  "bounded cart clear helper present",
+);
+assert.ok(
+  transportJs.indexOf("CART_CLEAR_TIMEOUT_MS") !== -1,
+  "cart clear timeout constant present",
+);
+assert.ok(
+  transportJs.indexOf("AbortController") !== -1,
+  "AbortController used to bound cart clear",
+);
+assert.ok(
+  transportJs.indexOf("cart_clear_started") !== -1 &&
+    transportJs.indexOf("cart_clear_success") !== -1 &&
+    transportJs.indexOf("cart_clear_failed") !== -1 &&
+    transportJs.indexOf("cart_clear_timeout") !== -1,
+  "safe cart-clear diagnostics present",
+);
+assert.ok(
+  transportJs.indexOf("bankRedirectHandled") !== -1,
+  "redirect-once guard present",
+);
+(function assertCartClearOnlyForCartSource() {
+  var start = transportJs.indexOf("function handleBankRedirect");
+  assert.ok(start !== -1);
+  var end = transportJs.indexOf("\n  function onMessage", start);
+  var body = transportJs.slice(start, end);
+  assert.ok(
+    body.indexOf('flow !== "cart"') !== -1 ||
+      body.indexOf("flow !== 'cart'") !== -1,
+    "Product/non-cart skips cart clear",
+  );
+  assert.ok(
+    body.indexOf("clearShopifyCartBounded") !== -1,
+    "Cart path attempts clearShopifyCartBounded",
+  );
+  var clearAt = body.indexOf("clearShopifyCartBounded");
+  var validateAt = body.indexOf("validateSmartUcfUrl");
+  assert.ok(
+    validateAt !== -1 && clearAt !== -1 && validateAt < clearAt,
+    "cart clear happens only after trusted destination validation",
+  );
+  var productImmediate =
+    body.indexOf("finishNavigate") !== -1 ||
+    body.indexOf("navigateToBank") !== -1;
+  assert.ok(productImmediate, "navigation helper used after clear path");
+  // Failure/timeout still navigate: catch then finishNavigate
+  assert.ok(
+    body.indexOf("cart_clear_failed") !== -1 &&
+      body.indexOf("cart_clear_timeout") !== -1,
+    "clear failure/timeout paths diagnosed",
+  );
+  var catchClear = body.indexOf(".catch");
+  var finishAfterCatch = body.lastIndexOf("finishNavigate");
+  assert.ok(
+    catchClear !== -1 && finishAfterCatch > catchClear,
+    "navigation still reached after clear failure catch",
+  );
+})();
+assert.ok(
+  productJs.indexOf("cart/clear") === -1 && cartJs.indexOf("cart/clear") === -1,
+  "Product/Cart assets must not clear cart themselves",
+);
 
 /* Portability: primary quantity uses JET-compatible generic discovery FIRST */
 assert.ok(
@@ -1063,11 +1152,7 @@ function caseCartMissingMapEntry() {
     [],
     "Missing map entry → [] (no unrelated IDs)",
   );
-  assertDeepEqual(
-    api.collectionIdsForProduct({}, 100),
-    [],
-    "Empty map → []",
-  );
+  assertDeepEqual(api.collectionIdsForProduct({}, 100), [], "Empty map → []");
   assertDeepEqual(
     api.parseCollectionMapHtml("<div>no json</div>"),
     {},

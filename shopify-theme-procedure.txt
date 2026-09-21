@@ -96,10 +96,15 @@ Modal lifecycle:
     iframe load is NOT authority to reveal
     trusted postMessage uni:ready → clear timeout, hide loading, show iframe
     no uni:ready within READY_TIMEOUT_MS (10000) → iframe stays hidden, safe parent error
-  postMessage uni:ready / uni:close accepted only when:
+  postMessage uni:ready / uni:close / uni:bank-redirect accepted only when:
     event.origin === new URL(CP_BASE_URL).origin   // derived from central config
-    event.data.type === "uni:ready" | "uni:close"
+    event.data.type === "uni:ready" | "uni:close" | "uni:bank-redirect"
     event.source === active iframe.contentWindow
+  Trusted uni:bank-redirect (after SmartUCF URL validation):
+    Product source → top-level SmartUCF navigation; Shopify cart untouched
+    Cart source → POST {Shopify.routes.root}cart/clear.js (bounded ~2s), then navigate
+    cart clear failure/timeout MUST NOT block SmartUCF redirect
+    modal/Step 3 loader stays visible until navigation (no closeActive before assign)
   Close (X / Escape / uni:close) at loading|ready|timeout clears timeout, resets iframe,
   restores scroll, releases Product/Cart lock. Re-open starts a fresh attempt.
 
