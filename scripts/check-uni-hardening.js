@@ -102,8 +102,26 @@ assert.ok(cartJs.indexOf("fetchCartCollectionMap") !== -1);
 assert.ok(cartJs.indexOf("uni-cart-collections") !== -1);
 assert.ok(cartJs.indexOf("collection_ids") !== -1);
 assert.ok(cartJs.indexOf("validateCurrency(cart.currency)") !== -1);
+assert.ok(
+  cartJs.indexOf("cart_identity: cartIdentity") !== -1,
+  "Cart payload includes cart_identity",
+);
+assert.ok(
+  cartJs.indexOf("var cartIdentity = cart && cart.token") !== -1,
+  "Cart identity comes from the current cart.js snapshot token",
+);
 assert.ok(cartJs.indexOf("dataset.currency") === -1);
 assert.ok(cartJs.indexOf("cart/clear") === -1);
+assert.strictEqual(
+  /console\.(?:log|debug)\s*\([^)]*(?:cartIdentity|cart\.token)/.test(cartJs),
+  false,
+  "Cart identity must not be logged",
+);
+assert.strictEqual(
+  /alert\s*\([^)]*(?:cartIdentity|cart\.token)/.test(cartJs),
+  false,
+  "Cart identity must not be displayed in alert",
+);
 
 [
   "unit_price_cents",
@@ -1180,10 +1198,68 @@ function caseCartClickUsesSectionRenderingNotInitialLiquid() {
   assert.ok(section.indexOf("item.product.collections") !== -1);
 }
 
+function cartPayloadFixture(token) {
+  var api = loadCartApi();
+  return api.buildPayload(
+    {
+      dataset: {
+        unicid: "merchant-1",
+        shopDomain: "shop.example",
+        shopPermanentDomain: "shop.myshopify.com",
+      },
+    },
+    {
+      token: token,
+      currency: "BGN",
+      total_price: 1000,
+      items: [
+        {
+          product_id: 100,
+          product_title: "A",
+          handle: "a",
+          variant_id: 1001,
+          variant_title: "Default",
+          quantity: 1,
+          final_price: 1000,
+          final_line_price: 1000,
+        },
+      ],
+    },
+    { 100: [10, 20] },
+  );
+}
+
+function caseCartPayloadIncludesExactIdentity() {
+  var token = "hWNH2Wed-XFI3?key=complete-secret-value";
+  var payload = cartPayloadFixture(token);
+  assert.strictEqual(payload.cart_identity, token, "Full cart token is preserved");
+  assert.strictEqual(payload.source, "cart");
+  assert.strictEqual(payload.unicid, "merchant-1");
+  assert.strictEqual(payload.shop_domain, "shop.example");
+  assert.strictEqual(payload.shop_permanent_domain, "shop.myshopify.com");
+  assert.strictEqual(payload.currency, "BGN");
+  assert.strictEqual(payload.total_price_cents, 1000);
+  assert.ok(typeof payload.products === "string", "Legacy products retained");
+}
+
+function caseCartPayloadRejectsMissingIdentity() {
+  [undefined, null, "", "   ", 123].forEach(function (token) {
+    assert.throws(
+      function () {
+        cartPayloadFixture(token);
+      },
+      /invalid-cart-identity/,
+      "Missing or invalid cart token blocks payload construction",
+    );
+  });
+}
+
 caseCartOneProductCollections();
 caseCartTwoProductsOwnCollections();
 caseCartSameProductMultipleVariants();
 caseCartMissingMapEntry();
 caseCartClickUsesSectionRenderingNotInitialLiquid();
+caseCartPayloadIncludesExactIdentity();
+caseCartPayloadRejectsMissingIdentity();
 
 console.log("check-uni-hardening: OK");

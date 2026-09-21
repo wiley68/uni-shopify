@@ -241,6 +241,11 @@
     var items = cart && Array.isArray(cart.items) ? cart.items : [];
     if (!items.length) throw new Error("empty-cart");
 
+    var cartIdentity = cart && cart.token;
+    if (typeof cartIdentity !== "string" || !cartIdentity.trim()) {
+      throw new Error("invalid-cart-identity");
+    }
+
     var currency = transport.validateCurrency(cart.currency);
     if (!currency) throw new Error("invalid-currency");
 
@@ -258,6 +263,7 @@
       currency: currency,
       products: JSON.stringify(products),
       total_price_cents: total,
+      cart_identity: cartIdentity,
     };
   }
 
@@ -440,6 +446,7 @@
       parseCollectionMapHtml: parseCollectionMapHtml,
       collectionIdsForProduct: collectionIdsForProduct,
       normalizeCartItem: normalizeCartItem,
+      buildPayload: buildPayload,
       normalizeCollectionIds: function (raw) {
         return transport.normalizeCollectionIds(raw);
       },
