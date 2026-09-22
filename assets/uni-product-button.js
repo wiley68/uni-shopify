@@ -29,6 +29,19 @@
           fn();
         };
 
+  /**
+   * Coalesce bursts of variant/quantity events into a single re-check
+   * per slot (no polling: the timer only fires once per burst).
+   */
+  function scheduleEligibilitySync(container) {
+    if (container.uniEligibilitySyncPending) return;
+    container.uniEligibilitySyncPending = true;
+    scheduleTick(function () {
+      container.uniEligibilitySyncPending = false;
+      syncSlotVisibility(container);
+    });
+  }
+
   function positiveInteger(value) {
     var text = String(value == null ? "" : value).trim();
     if (!/^\d+$/.test(text)) return null;
@@ -253,26 +266,29 @@
    * 2) exactly one candidate → use it (JET behavior)
    * 3) multiple → associate/rank via current add-to-cart form
    * 4) visible tie-break among remaining same-rank duplicates
-   * 5) genuine ambiguity → safe fallback 1
-   * Invalid explicit selected value → null (fail safely)
+   * 5) genuine ambiguity → no single control
+   *
+   * resolveQuantity() reuses this exact policy, so local visibility and the
+   * CP payload can never read two different quantity definitions.
+   * @returns {Element|null} the one proven quantity control, if any
    */
-  function resolveQuantity(container) {
+  function resolveQuantityControl(container) {
     var candidates = collectGenericQuantityCandidates();
 
     // A — exactly one generic candidate (proven JET path)
     if (candidates.length === 1) {
-      return parseQuantityControl(candidates[0]).value;
+      return candidates[0];
     }
 
     if (candidates.length === 0) {
-      return 1;
+      return null;
     }
 
     // B — multiple candidates: form association only as disambiguation
     var form = findProductForm(container);
     var associated = pickUniqueByAssociation(candidates, form);
     if (associated) {
-      return parseQuantityControl(associated).value;
+      return associated;
     }
 
     // C — visible/interactive tie-break when one presented remains
@@ -282,10 +298,21 @@
         presented.push(candidates[i]);
     }
     if (presented.length === 1) {
-      return parseQuantityControl(presented[0]).value;
+      return presented[0];
     }
 
     // D — genuine multi-product ambiguity: do not pick arbitrary first
+    return null;
+  }
+
+  /**
+   * Quantity value for the existing Product behavior.
+   * Invalid explicit selected value → null (fail safely);
+   * no control or genuine ambiguity → 1.
+   */
+  function resolveQuantity(container) {
+    var control = resolveQuantityControl(container);
+    if (control) return parseQuantityControl(control).value;
     return 1;
   }
 
@@ -362,43 +389,118 @@
   }
 
   /**
-   * Local minimum gate: financing continues only when the selected variant is
-   * known and priced at or above the configured minimum. An unavailable local
-   * price keeps the pre-existing eligibility behavior.
+   * Product amount for the local gate: selected variant price × selected
+   * quantity, in minor units. Integer arithmetic only — no floating point
+   * money math, no extra Shopify request.
+   * @returns {number|null} null when no local price is available
    */
-  function isPriceAboveMinimum(container, variantId) {
-    if (!variantId) return false;
+  function resolveProductAmountMinor(container, variantId, quantity) {
     var price = resolveVariantPriceMinor(container, variantId);
-    if (price == null) return true;
-    return price >= resolveMinimumMinor(container);
+    if (price == null) return null;
+    var count = positiveInteger(quantity) || 1;
+    return price * count;
   }
 
   /**
-   * Keep the slot visible only while the selected variant passes the local
-   * minimum. The server-rendered hidden state is the initial value; this only
-   * re-syncs after variant changes.
+   * Local minimum gate: financing continues only when the selected variant is
+   * known and variant price × quantity is at or above the configured minimum.
+   * An unavailable local price keeps the pre-existing eligibility behavior.
+   */
+  function isAmountAboveMinimum(container, variantId, quantity) {
+    if (!variantId) return false;
+    var amount = resolveProductAmountMinor(container, variantId, quantity);
+    if (amount == null) return true;
+    return amount >= resolveMinimumMinor(container);
+  }
+
+  /**
+   * Quantity used for local visibility only. An invalid/absent quantity falls
+   * back to 1 (the existing safe Shopify behavior); the click-time gate still
+   * rejects an explicitly invalid quantity before any CP request.
+   */
+  function resolveVisibilityQuantity(container) {
+    return positiveInteger(resolveQuantity(container)) || 1;
+  }
+
+  /**
+   * Keep the slot visible only while the current product amount (variant
+   * price × quantity) passes the local minimum. The server-rendered hidden
+   * state is the initial value; this only re-syncs the same slot in place.
    */
   function syncSlotVisibility(container) {
     var variantId = resolveVariantId(container);
-    var eligible = variantId ? isPriceAboveMinimum(container, variantId) : true;
+    var quantity = resolveVisibilityQuantity(container);
+    var eligible = variantId
+      ? isAmountAboveMinimum(container, variantId, quantity)
+      : true;
     container.hidden = !eligible;
     return eligible;
   }
 
   /**
-   * Variant changes: one listener scoped to the current add-to-cart form
-   * (proven Shopify variant control container), falling back to the theme
-   * section. No document-level listeners, no polling.
+   * Drop this slot's previously bound change/input listeners so repeated
+   * initialization (or a replaced form) can never stack handlers.
    */
-  function bindVariantChange(container) {
+  function unbindProductChange(container) {
+    var previous = container.uniChangeBindings;
+    if (!previous || !previous.length) return;
+    for (var i = 0; i < previous.length; i++) {
+      var binding = previous[i];
+      if (
+        binding.target &&
+        typeof binding.target.removeEventListener === "function"
+      ) {
+        binding.target.removeEventListener(binding.type, binding.handler);
+      }
+    }
+    container.uniChangeBindings = [];
+  }
+
+  /**
+   * Variant and quantity changes: listeners scoped to the current add-to-cart
+   * form (proven Shopify variant control container), falling back to the theme
+   * section, plus the one resolved quantity control so themes that dispatch
+   * non-bubbling change/input on the control itself are still observed.
+   * No document-level listeners, no polling.
+   */
+  function bindProductChange(container) {
+    unbindProductChange(container);
     var scope = findProductForm(container) || findProductSection(container);
-    if (!scope || typeof scope.addEventListener !== "function") return;
-    scope.addEventListener("change", function () {
-      // Defer one tick so theme variant handlers settle the selection first.
-      scheduleTick(function () {
-        syncSlotVisibility(container);
+    var targets = [];
+    if (scope && typeof scope.addEventListener === "function") {
+      targets.push(scope);
+    }
+    var control = resolveQuantityControl(container);
+    if (
+      control &&
+      typeof control.addEventListener === "function" &&
+      targets.indexOf(control) === -1
+    ) {
+      targets.push(control);
+    }
+    if (!targets.length) return;
+
+    function onControlChange() {
+      // Defer one tick so theme handlers settle the selection/value first.
+      scheduleEligibilitySync(container);
+    }
+
+    var bound = [];
+    for (var i = 0; i < targets.length; i++) {
+      targets[i].addEventListener("change", onControlChange);
+      targets[i].addEventListener("input", onControlChange);
+      bound.push({
+        target: targets[i],
+        type: "change",
+        handler: onControlChange,
       });
-    });
+      bound.push({
+        target: targets[i],
+        type: "input",
+        handler: onControlChange,
+      });
+    }
+    container.uniChangeBindings = bound;
   }
 
   function buildPayload(container, variantId, quantity) {
@@ -543,8 +645,9 @@
 
       if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
-      // Local minimum gate: a variant below uni_min_price never reaches CP.
-      if (!isPriceAboveMinimum(container, variantId)) {
+      // Local minimum gate: variant price × quantity below uni_min_price
+      // never reaches CP.
+      if (!isAmountAboveMinimum(container, variantId, quantity)) {
         container.hidden = true;
         return;
       }
@@ -568,12 +671,17 @@
         if (container.dataset.uniInitialized === "true") return;
         var button = container.querySelector(".uni-product-button");
         if (!(button instanceof HTMLButtonElement)) return;
-        container.dataset.uniInitialized = "true";
+        if (container.dataset.uniInitialized !== "true") {
+          container.dataset.uniInitialized = "true";
+          button.addEventListener("click", function () {
+            handleClick(container, button);
+          });
+        }
+        // Re-sync and re-bind on every (re)initialization: a replaced form or
+        // quantity control must not leave stale listeners behind, and binding
+        // always unbinds first so no duplicates accumulate.
         syncSlotVisibility(container);
-        bindVariantChange(container);
-        button.addEventListener("click", function () {
-          handleClick(container, button);
-        });
+        bindProductChange(container);
       });
   }
 
@@ -597,9 +705,12 @@
       findProductSection: findProductSection,
       resolveMinimumMinor: resolveMinimumMinor,
       resolveVariantPriceMinor: resolveVariantPriceMinor,
-      isPriceAboveMinimum: isPriceAboveMinimum,
+      resolveProductAmountMinor: resolveProductAmountMinor,
+      isAmountAboveMinimum: isAmountAboveMinimum,
+      resolveVisibilityQuantity: resolveVisibilityQuantity,
+      resolveQuantityControl: resolveQuantityControl,
       syncSlotVisibility: syncSlotVisibility,
-      bindVariantChange: bindVariantChange,
+      bindProductChange: bindProductChange,
       handleClick: handleClick,
     };
   }

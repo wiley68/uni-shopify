@@ -521,17 +521,26 @@ assert.ok(
   "generic-first priority required",
 );
 (function assertGenericBeforeFormDisambiguation() {
-  var fn = productJs.indexOf("function resolveQuantity");
-  assert.ok(fn !== -1, "resolveQuantity present");
-  var collectAt = productJs.indexOf("collectGenericQuantityCandidates()", fn);
-  var formAt = productJs.indexOf("findProductForm(container)", fn);
+  var fn = productJs.indexOf("function resolveQuantityControl");
+  assert.ok(fn !== -1, "resolveQuantityControl present");
+  var next = productJs.indexOf("function resolveQuantity(", fn);
+  assert.ok(next !== -1, "resolveQuantity present");
+  var body = productJs.slice(fn, next);
+  var collectAt = body.indexOf("collectGenericQuantityCandidates()");
+  var formAt = body.indexOf("findProductForm(container)");
   assert.ok(
     collectAt !== -1 && formAt !== -1,
-    "collect + form used in resolveQuantity",
+    "collect + form used in quantity resolution",
   );
   assert.ok(
     collectAt < formAt,
     "generic candidates must be collected before findProductForm disambiguation",
+  );
+  assert.ok(
+    productJs
+      .slice(next, productJs.indexOf("function resolveVariantId", next))
+      .indexOf("resolveQuantityControl(container)") !== -1,
+    "resolveQuantity reuses the same single quantity policy",
   );
 })();
 
@@ -584,6 +593,13 @@ function matchesSimple(el, selector) {
   if (selector === '[name="quantity"]') return el.attrs.name === "quantity";
   if (selector === '[name="quantity"][form]') {
     return el.attrs.name === "quantity" && el.attrs.form != null;
+  }
+  if (selector === 'form[action*="/cart"]') {
+    return (
+      el.tagName === "FORM" &&
+      typeof el.attrs.action === "string" &&
+      el.attrs.action.indexOf("/cart") !== -1
+    );
   }
   if (
     selector.indexOf('form[action*="/cart/add"]') === 0 ||
@@ -1366,6 +1382,18 @@ assert.ok(
   "server-rendered initial hidden gate",
 );
 assert.ok(
+  productLiquid.indexOf(
+    "{% if uni_initial_amount < uni_min_minor %}hidden{% endif %}",
+  ) !== -1,
+  "product initial gate hidden only below the minimum (equality allowed)",
+);
+assert.ok(
+  cartLiquid.indexOf(
+    "{% if uni_cart_total < uni_min_minor %}hidden{% endif %}",
+  ) !== -1,
+  "cart initial gate hidden only below the minimum (equality allowed)",
+);
+assert.ok(
   cartLiquid.indexOf("cart.total_price") !== -1,
   "cart Liquid uses the cart amount",
 );
@@ -1418,9 +1446,46 @@ assert.ok(
   "documented fallback constant in both assets",
 );
 
-(function assertVariantChangeListenerScoped() {
-  var fn = productJs.indexOf("function bindVariantChange");
-  assert.ok(fn !== -1, "bindVariantChange present");
+/* Cart dynamic observation must stay scoped, coalesced and loop-free */
+assert.strictEqual(
+  (cartJs.match(/new MutationObserver/g) || []).length,
+  1,
+  "exactly one Cart MutationObserver is constructed",
+);
+assert.ok(
+  /observe\(\s*[^,]+,\s*\{\s*childList:\s*true,\s*subtree:\s*true\s*\}\s*\)/.test(
+    cartJs,
+  ),
+  "Cart observer watches childList + subtree only",
+);
+assert.strictEqual(
+  /observe\(\s*(?:document|document\.body|document\.documentElement)/.test(
+    cartJs,
+  ),
+  false,
+  "Cart observer never targets document/body/documentElement",
+);
+assert.ok(
+  cartJs.indexOf("isObservableScope") !== -1,
+  "document/body observation guard present",
+);
+assert.ok(
+  cartJs.indexOf("cartWatch.scheduled") !== -1,
+  "Cart update bursts are coalesced",
+);
+assert.ok(
+  cartJs.indexOf("unbindCartScopeEvents") !== -1 &&
+    cartJs.indexOf("removeEventListener") !== -1,
+  "scoped Cart listeners are unbound before rebinding",
+);
+assert.ok(
+  cartJs.indexOf("CART_FORM_SELECTOR") !== -1,
+  "Cart scope comes from the storefront Cart form convention",
+);
+
+(function assertProductChangeListenerScoped() {
+  var fn = productJs.indexOf("function bindProductChange");
+  assert.ok(fn !== -1, "bindProductChange present");
   var next = productJs.indexOf("\n  function ", fn + 10);
   var body = productJs.slice(fn, next === -1 ? productJs.length : next);
   assert.ok(
@@ -1433,12 +1498,24 @@ assert.ok(
   );
   assert.ok(
     body.indexOf('addEventListener("change"') !== -1,
-    "change listener bound on the resolved scope",
+    "change listener bound on the resolved target",
+  );
+  assert.ok(
+    body.indexOf('addEventListener("input"') !== -1,
+    "input listener bound for quantity widgets",
+  );
+  assert.ok(
+    body.indexOf("resolveQuantityControl(container)") !== -1,
+    "resolved quantity control is part of the bound targets",
   );
   assert.ok(body.indexOf("document") === -1, "no document-level binding");
   assert.ok(
     body.indexOf("querySelectorAll") === -1,
     "no per-control listener sweep",
+  );
+  assert.ok(
+    body.indexOf("setInterval") === -1,
+    "no polling in the product change binding",
   );
 })();
 
@@ -1453,8 +1530,8 @@ assert.ok(
     "initialize applies the local gate",
   );
   assert.ok(
-    body.indexOf("bindVariantChange(container)") !== -1,
-    "initialize binds variant changes",
+    body.indexOf("bindProductChange(container)") !== -1,
+    "initialize binds variant/quantity changes",
   );
 })();
 
@@ -1464,11 +1541,16 @@ assert.ok(
     pStart,
     productJs.indexOf("function initialize", pStart),
   );
-  var pGate = pBody.indexOf("isPriceAboveMinimum");
+  var pGate = pBody.indexOf("isAmountAboveMinimum");
   var pPost = pBody.indexOf("postToIframe");
   assert.ok(
     pGate !== -1 && pPost !== -1 && pGate < pPost,
-    "product local gate precedes CP POST",
+    "product amount gate precedes CP POST",
+  );
+
+  assert.ok(
+    /isAmountAboveMinimum\(container,\s*variantId,\s*quantity\)/.test(pBody),
+    "product click-time gate uses variant x quantity",
   );
 
   var cStart = cartJs.indexOf("async function handleClick");
@@ -1538,17 +1620,55 @@ function createProductFixture(options) {
     type: "hidden",
     value: options.variantId || "11",
   });
+  var quantityInput = null;
+  if (options.quantity != null) {
+    quantityInput = createEl("input", {
+      id: "product-quantity",
+      name: "quantity",
+      type: "number",
+      value: String(options.quantity),
+    });
+  }
   form.appendChild(slot);
   form.appendChild(variantInput);
+  if (quantityInput) form.appendChild(quantityInput);
   wrap.appendChild(form);
   installDom(wrap);
-  return { slot: slot, form: form, variantInput: variantInput };
+  return {
+    slot: slot,
+    form: form,
+    variantInput: variantInput,
+    quantityInput: quantityInput,
+  };
 }
 
 /** Theme-style variant change: update the selected id, then dispatch change. */
 function chooseVariant(fixture, variantId) {
   fixture.variantInput.value = String(variantId);
   dispatchBubblingEvent(fixture.variantInput, "change");
+}
+
+/** Theme-style quantity change: update the control, then dispatch the event. */
+function chooseQuantity(fixture, quantity, eventType) {
+  fixture.quantityInput.value = String(quantity);
+  var target = fixture.quantityInput;
+  if (eventType === "input") {
+    dispatchBubblingEvent(target, "input");
+    return;
+  }
+  if (eventType === "control-only") {
+    // Some themes dispatch on the control itself without bubbling.
+    dispatchEventOnNode(target, "change");
+    return;
+  }
+  dispatchBubblingEvent(target, "change");
+}
+
+function dispatchEventOnNode(node, type) {
+  var list = (node.__listeners && node.__listeners[type]) || [];
+  for (var i = 0; i < list.length; i++) {
+    list[i].call(node, { type: type, target: node });
+  }
 }
 
 function createCartSlot(minMinor) {
@@ -1561,6 +1681,94 @@ function createCartSlot(minMinor) {
   };
   if (minMinor != null) attrs["data-uni-min-price"] = String(minMinor);
   return createEl("div", attrs);
+}
+
+/**
+ * Cart fixture shaped like a storefront Cart page: theme section > cart form
+ * > (line items) and the UniCredit slot.
+ */
+function createCartFixture(minMinor) {
+  var section = createEl("div", {
+    id: "shopify-section-main-cart",
+    class: "shopify-section",
+  });
+  var form = createEl("form", { id: "cart", action: "/cart", method: "post" });
+  var lineItems = createEl("div", { id: "cart-items" });
+  var quantity = createEl("input", {
+    id: "cart-quantity",
+    name: "updates[]",
+    type: "number",
+    value: "1",
+  });
+  var slot = createCartSlot(minMinor);
+  form.appendChild(lineItems);
+  form.appendChild(quantity);
+  form.appendChild(slot);
+  section.appendChild(form);
+  installDom(section);
+  return { section: section, form: form, slot: slot, quantity: quantity };
+}
+
+/** Records observer instances so tests can prove none accumulate. */
+function createMutationObserverStub() {
+  var instances = [];
+  function MutationObserverStub(callback) {
+    this.callback = typeof callback === "function" ? callback : function () {};
+    this.observed = [];
+    instances.push(this);
+  }
+  MutationObserverStub.prototype.observe = function (target, options) {
+    this.observed.push({ target: target, options: options });
+  };
+  MutationObserverStub.prototype.disconnect = function () {
+    this.disconnected = true;
+  };
+  MutationObserverStub.instances = instances;
+  return MutationObserverStub;
+}
+
+function triggerCartRedraw(observerStub) {
+  for (var i = 0; i < observerStub.instances.length; i++) {
+    observerStub.instances[i].callback([], observerStub.instances[i]);
+  }
+}
+
+/** Let the coalesced cart.js re-check (microtask chain) settle. */
+function settle() {
+  return new Promise(function (resolve) {
+    setImmediate(resolve);
+  }).then(function () {
+    return new Promise(function (resolve) {
+      setImmediate(resolve);
+    });
+  });
+}
+
+/**
+ * Deterministic timer queue: replaces the host timer so burst coalescing can
+ * be asserted exactly (the default stub fires synchronously).
+ */
+function useQueuedTimers() {
+  var previous = sandbox.setTimeout;
+  var queue = [];
+  sandbox.setTimeout = function (fn) {
+    queue.push(fn);
+    return queue.length;
+  };
+  return {
+    queue: queue,
+    flush: function () {
+      var guard = 0;
+      while (queue.length && guard < 100) {
+        guard += 1;
+        var fn = queue.shift();
+        fn();
+      }
+    },
+    restore: function () {
+      sandbox.setTimeout = previous;
+    },
+  };
 }
 
 /** Counts transport entry: begin() is only reached when the gate allows CP. */
@@ -1603,58 +1811,323 @@ function caseProductMinimumBoundaries() {
   var fixture = createProductFixture({
     minMinor: 5000,
     prices: '{"11":4999,"22":5000,"33":5001}',
+    quantity: 1,
   });
   var api = loadProductApi();
   fixture.variantInput.value = "11";
   assert.strictEqual(
     api.syncSlotVisibility(fixture.slot),
     false,
-    "49.99 < 50 → ineligible",
+    "49.99 x 1 < 50 → ineligible",
   );
-  assert.strictEqual(fixture.slot.hidden, true, "49.99 < 50 → hidden");
+  assert.strictEqual(fixture.slot.hidden, true, "49.99 x 1 < 50 → hidden");
   fixture.variantInput.value = "22";
   assert.strictEqual(
     api.syncSlotVisibility(fixture.slot),
     true,
-    "50.00 = 50 → eligible",
+    "50.00 x 1 = 50 → eligible",
   );
-  assert.strictEqual(fixture.slot.hidden, false, "50.00 = 50 → visible");
+  assert.strictEqual(fixture.slot.hidden, false, "50.00 x 1 = 50 → visible");
   fixture.variantInput.value = "33";
   assert.strictEqual(
     api.syncSlotVisibility(fixture.slot),
     true,
-    "50.01 > 50 → eligible",
+    "50.01 x 1 > 50 → eligible",
   );
-  assert.strictEqual(fixture.slot.hidden, false, "50.01 > 50 → visible");
+  assert.strictEqual(fixture.slot.hidden, false, "50.01 x 1 > 50 → visible");
 }
 
-function caseProductVariantTransition() {
+/** Price x quantity boundaries, including the equality edge cases. */
+function caseProductAmountBoundaries() {
+  var prices = '{"11":2499,"22":2500,"33":2501}';
+
+  [
+    { variantId: "11", quantity: 2, expected: false, label: "24.99 x 2 = 49.98" },
+    { variantId: "22", quantity: 2, expected: true, label: "25.00 x 2 = 50.00" },
+    { variantId: "33", quantity: 2, expected: true, label: "25.01 x 2 = 50.02" },
+  ].forEach(function (testCase) {
+    var fixture = createProductFixture({
+      minMinor: 5000,
+      prices: prices,
+      variantId: testCase.variantId,
+      quantity: testCase.quantity,
+    });
+    // Re-load per fixture so the api resolves this fixture's DOM.
+    var scopedApi = loadProductApi();
+    assert.strictEqual(
+      scopedApi.syncSlotVisibility(fixture.slot),
+      testCase.expected,
+      testCase.label + " → eligible=" + testCase.expected,
+    );
+    assert.strictEqual(
+      fixture.slot.hidden,
+      !testCase.expected,
+      testCase.label + " → hidden=" + !testCase.expected,
+    );
+  });
+
+  [
+    { price: 5000, quantity: 1, expected: true, label: "50.00 x 1" },
+    { price: 4900, quantity: 1, expected: false, label: "49.00 x 1" },
+  ].forEach(function (testCase) {
+    var fixture = createProductFixture({
+      minMinor: 5000,
+      prices: '{"11":' + testCase.price + "}",
+      variantId: "11",
+      quantity: testCase.quantity,
+    });
+    var scopedApi = loadProductApi();
+    assert.strictEqual(
+      scopedApi.syncSlotVisibility(fixture.slot),
+      testCase.expected,
+      testCase.label + " → eligible=" + testCase.expected,
+    );
+  });
+
+  // Integer arithmetic only: 24.99 x 2 must be 4998, not a rounded float.
+  assert.strictEqual(
+    loadProductApi().resolveProductAmountMinor(
+      { dataset: { uniMinPrice: "5000", uniVariantPrices: '{"11":2499}' } },
+      11,
+      2,
+    ),
+    4998,
+    "minor-unit amount is exact integer math",
+  );
+}
+
+function caseProductVariantAndQuantityTransitions() {
   var fixture = createProductFixture({
     minMinor: 5000,
-    prices: '{"11":6000,"22":4000}',
+    prices: '{"11":3000,"22":2000}',
+    variantId: "11",
+    quantity: 1,
   });
   var api = loadProductApi();
-  api.bindVariantChange(fixture.slot);
+  api.bindProductChange(fixture.slot);
 
   assert.strictEqual(
     api.syncSlotVisibility(fixture.slot),
-    true,
-    "60.00 → eligible at start",
+    false,
+    "30.00 x 1 = 30 → hidden",
   );
-  assert.strictEqual(fixture.slot.hidden, false, "60.00 → visible at start");
+  assert.strictEqual(fixture.slot.hidden, true, "30.00 x 1 = 30 → hidden");
+
+  chooseQuantity(fixture, 2);
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "30.00 x 2 = 60 → visible after quantity change",
+  );
 
   chooseVariant(fixture, 22);
   assert.strictEqual(
     fixture.slot.hidden,
     true,
-    "variant change to 40.00 → hidden",
+    "variant change to 20.00 with quantity 2 → 40 → hidden",
+  );
+
+  chooseQuantity(fixture, 3);
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "20.00 x 3 = 60 → visible again",
   );
 
   chooseVariant(fixture, 11);
   assert.strictEqual(
     fixture.slot.hidden,
     false,
-    "variant change back to 60.00 → visible again",
+    "30.00 x 3 = 90 → visible",
+  );
+  chooseQuantity(fixture, 1);
+  assert.strictEqual(
+    fixture.slot.hidden,
+    true,
+    "back to 30.00 x 1 = 30 → hidden",
+  );
+}
+
+/** Repeated Product initialization must not stack change/input listeners. */
+function caseProductRebindDoesNotDuplicate() {
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":3000}',
+    variantId: "11",
+    quantity: 1,
+  });
+  var api = loadProductApi();
+  api.bindProductChange(fixture.slot);
+  api.bindProductChange(fixture.slot);
+  api.bindProductChange(fixture.slot);
+  assert.ok(
+    fixture.slot.uniChangeBindings.length >= 2,
+    "form change + input listeners are recorded for unbinding",
+  );
+  assert.strictEqual(
+    fixture.form.__listeners.change.length,
+    1,
+    "the product form keeps exactly one change listener",
+  );
+  assert.strictEqual(
+    fixture.form.__listeners.input.length,
+    1,
+    "the product form keeps exactly one input listener",
+  );
+  assert.strictEqual(
+    fixture.quantityInput.__listeners.change.length,
+    1,
+    "the quantity control keeps exactly one change listener",
+  );
+  assert.strictEqual(
+    fixture.quantityInput.__listeners.input.length,
+    1,
+    "the quantity control keeps exactly one input listener",
+  );
+
+  api.syncSlotVisibility(fixture.slot);
+  assert.strictEqual(fixture.slot.hidden, true, "30.00 x 1 → hidden");
+  var timers = useQueuedTimers();
+  chooseQuantity(fixture, 2);
+  assert.strictEqual(timers.queue.length, 1, "one re-check per event burst");
+  timers.flush();
+  timers.restore();
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "re-bound listeners still re-sync visibility",
+  );
+}
+
+/** Two product slots on one page must re-sync independently. */
+function caseProductTwoSlotsStayIndependent() {
+  var page = createEl("div", {});
+
+  function buildSlot(letter, prices, variantId) {
+    var form = createEl("form", {
+      id: "form-" + letter,
+      action: "/cart/add",
+      class: "product-form",
+    });
+    var slot = createEl("div", {
+      id: "slot-" + letter,
+      "data-uni-product-button": "",
+      "data-unicid": "merchant-1",
+      "data-shop-domain": "shop.example",
+      "data-shop-permanent-domain": "shop.myshopify.com",
+      "data-uni-min-price": "5000",
+      "data-uni-variant-prices": prices,
+      "data-initial-variant-id": variantId,
+    });
+    var variantInput = createEl("input", {
+      name: "id",
+      type: "hidden",
+      value: variantId,
+    });
+    var quantityInput = createEl("input", {
+      name: "quantity",
+      type: "number",
+      value: "1",
+    });
+    form.appendChild(slot);
+    form.appendChild(variantInput);
+    form.appendChild(quantityInput);
+    page.appendChild(form);
+    return { slot: slot, variantInput: variantInput, quantityInput: quantityInput };
+  }
+
+  var first = buildSlot("a", '{"11":3000}', "11"); // 30.00 → hidden
+  var second = buildSlot("b", '{"22":6000,"33":2000}', "22"); // 60.00 → visible
+  installDom(page);
+  var api = loadProductApi();
+  api.bindProductChange(first.slot);
+  api.bindProductChange(second.slot);
+  api.syncSlotVisibility(first.slot);
+  api.syncSlotVisibility(second.slot);
+  assert.strictEqual(first.slot.hidden, true, "slot A: 30.00 x 1 → hidden");
+  assert.strictEqual(second.slot.hidden, false, "slot B: 60.00 x 1 → visible");
+
+  var timers = useQueuedTimers();
+  first.quantityInput.value = "2"; // 30.00 x 2 = 60 → visible
+  second.variantInput.value = "33"; // 20.00 x 1 = 20 → hidden
+  dispatchBubblingEvent(first.quantityInput, "change");
+  dispatchBubblingEvent(second.variantInput, "change");
+  assert.strictEqual(
+    timers.queue.length,
+    2,
+    "each slot coalesces its own burst (per-slot pending flag)",
+  );
+  timers.flush();
+  timers.restore();
+
+  assert.strictEqual(
+    first.slot.hidden,
+    false,
+    "slot A follows its own quantity change",
+  );
+  assert.strictEqual(
+    second.slot.hidden,
+    true,
+    "slot B follows its own variant change",
+  );
+}
+
+/** Quantity widgets: bubbling change, input, and non-bubbling control events. */
+function caseProductQuantityEventSources() {
+  ["change", "input", "control-only"].forEach(function (eventType) {
+    var fixture = createProductFixture({
+      minMinor: 5000,
+      prices: '{"11":3000}',
+      variantId: "11",
+      quantity: 1,
+    });
+    var api = loadProductApi();
+    api.bindProductChange(fixture.slot);
+    api.syncSlotVisibility(fixture.slot);
+    assert.strictEqual(fixture.slot.hidden, true, "starts hidden at qty 1");
+
+    chooseQuantity(fixture, 2, eventType);
+    assert.strictEqual(
+      fixture.slot.hidden,
+      false,
+      eventType + " quantity event re-syncs to visible",
+    );
+  });
+
+  // Quantity without a usable control counts as 1; invalid values too.
+  var noQuantity = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":3000}',
+    variantId: "11",
+  });
+  var api = loadProductApi();
+  assert.strictEqual(
+    api.resolveVisibilityQuantity(noQuantity.slot),
+    1,
+    "no quantity control → 1",
+  );
+  assert.strictEqual(
+    api.syncSlotVisibility(noQuantity.slot),
+    false,
+    "30.00 x 1 → hidden without a quantity control",
+  );
+
+  var invalidQuantity = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":3000}',
+    variantId: "11",
+    quantity: 0,
+  });
+  var invalidApi = loadProductApi();
+  assert.strictEqual(
+    invalidApi.resolveVisibilityQuantity(invalidQuantity.slot),
+    1,
+    "invalid quantity falls back to 1 for visibility",
+  );
+  assert.strictEqual(
+    invalidApi.syncSlotVisibility(invalidQuantity.slot),
+    false,
+    "invalid quantity keeps the safe 1-unit visibility result",
   );
 }
 
@@ -1696,9 +2169,14 @@ function caseProductPriceDataAndFallback() {
     "free variant price resolves",
   );
   assert.strictEqual(
-    api.isPriceAboveMinimum(freeVariant, 11),
+    api.isAmountAboveMinimum(freeVariant, 11, 1),
     false,
     "free variant is below any positive minimum",
+  );
+  assert.strictEqual(
+    api.resolveProductAmountMinor(freeVariant, 11, 0),
+    0,
+    "invalid quantity cannot inflate the local amount",
   );
   assert.strictEqual(
     api.resolveVariantPriceMinor(freeVariant, 99),
@@ -1708,7 +2186,7 @@ function caseProductPriceDataAndFallback() {
 
   var noPriceData = { dataset: { uniMinPrice: "5000" } };
   assert.strictEqual(
-    api.isPriceAboveMinimum(noPriceData, 123),
+    api.isAmountAboveMinimum(noPriceData, 123, 1),
     true,
     "missing local price keeps pre-existing eligibility",
   );
@@ -1716,12 +2194,12 @@ function caseProductPriceDataAndFallback() {
     dataset: { uniMinPrice: "5000", uniVariantPrices: "not json" },
   };
   assert.strictEqual(
-    api.isPriceAboveMinimum(badPriceData, 123),
+    api.isAmountAboveMinimum(badPriceData, 123, 1),
     true,
     "unparsable local price keeps pre-existing eligibility",
   );
   assert.strictEqual(
-    api.isPriceAboveMinimum(freeVariant, null),
+    api.isAmountAboveMinimum(freeVariant, null, 1),
     false,
     "unresolved variant cannot be eligible",
   );
@@ -1773,6 +2251,100 @@ function caseCartMinimumBoundaries() {
   );
 }
 
+/** Liquid renders the initial state; the watcher must flip it either way. */
+function caseCartInitialStateFromLiquid() {
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi();
+  api.ensureCartObservation(fixture.slot);
+
+  fixture.slot.hidden = true; // Liquid rendered a below-minimum cart
+  api.applyCartVisibility({ total_price: 6000 });
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "initial below minimum → above becomes visible",
+  );
+  api.applyCartVisibility({ total_price: 4999 });
+  assert.strictEqual(
+    fixture.slot.hidden,
+    true,
+    "above → below becomes hidden again",
+  );
+
+  fixture.slot.hidden = false; // Liquid rendered an at/above-minimum cart
+  api.applyCartVisibility({ total_price: 4999 });
+  assert.strictEqual(
+    fixture.slot.hidden,
+    true,
+    "initial above minimum → below becomes hidden",
+  );
+  assert.ok(
+    fixture.form.contains(fixture.slot),
+    "the slot is toggled in place, never removed",
+  );
+}
+
+/** Dynamic Cart visibility must never rely on broad observation. */
+function caseCartScopeSafety() {
+  var observerStub = createMutationObserverStub();
+  sandbox.MutationObserver = observerStub;
+
+  var loose = createEl("div", {});
+  var looseSlot = createCartSlot(5000);
+  loose.appendChild(looseSlot);
+  installDom(loose);
+  var looseApi = loadCartApi();
+  assert.strictEqual(
+    looseApi.resolveCartObservationScope(looseSlot),
+    null,
+    "no Cart form/section → no observation scope",
+  );
+  looseApi.ensureCartObservation(looseSlot);
+  assert.strictEqual(
+    observerStub.instances.length,
+    0,
+    "no observer is created without a safe narrow scope",
+  );
+
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi();
+  var scope = api.resolveCartObservationScope(fixture.slot);
+  assert.strictEqual(scope, fixture.form, "Cart form is the observation scope");
+  assert.notStrictEqual(scope, sandbox.document);
+  assert.notStrictEqual(scope, sandbox.document.body);
+  assert.notStrictEqual(scope, sandbox.document.documentElement);
+  assert.notStrictEqual(
+    scope,
+    fixture.section,
+    "the narrower Cart form is preferred over the theme section",
+  );
+  assert.strictEqual(
+    api.isObservableScope(sandbox.document),
+    false,
+    "document is never an observation target",
+  );
+  assert.strictEqual(
+    api.isObservableScope(sandbox.document.body),
+    false,
+    "document.body is never an observation target",
+  );
+  assert.strictEqual(
+    api.isObservableScope(sandbox.document.documentElement),
+    false,
+    "documentElement is never an observation target",
+  );
+  assert.strictEqual(
+    api.isObservableScope(null),
+    false,
+    "a missing scope is never observable",
+  );
+  assert.strictEqual(
+    api.isObservableScope(fixture.form),
+    true,
+    "the resolved Cart form is observable",
+  );
+}
+
 /* Cart updates use the integration's real cart.js mechanism. */
 function stubCartFetch(getCart) {
   sandbox.fetch = function () {
@@ -1786,19 +2358,13 @@ function stubCartFetch(getCart) {
 }
 
 function caseCartUpdateAcrossThreshold() {
-  installDom(createEl("div", {}));
-  var cart = {
-    token: "cart-token-1",
-    item_count: 1,
-    total_price: 4999,
-    currency: "BGN",
-    items: [{ key: "1:abc", quantity: 1, final_line_price: 4999 }],
-  };
+  var cart = cartSnapshot(4999, 1);
   stubCartFetch(function () {
     return cart;
   });
+  var fixture = createCartFixture(5000);
   var api = loadCartApi();
-  var slot = createCartSlot(5000);
+  var slot = fixture.slot;
 
   return api
     .fetchStableCart()
@@ -1809,16 +2375,7 @@ function caseCartUpdateAcrossThreshold() {
         "cart 49.99 → below minimum",
       );
       // Quantity update raises the cart above the minimum.
-      cart = {
-        token: "cart-token-1",
-        item_count: 2,
-        total_price: 5001,
-        currency: "BGN",
-        items: [
-          { key: "1:abc", quantity: 1, final_line_price: 4999 },
-          { key: "2:def", quantity: 1, final_line_price: 2 },
-        ],
-      };
+      cart = cartSnapshot(5001, 2);
       return api.fetchStableCart();
     })
     .then(function (snapshot) {
@@ -1835,6 +2392,225 @@ function caseCartUpdateAcrossThreshold() {
     });
 }
 
+function cartSnapshot(totalPrice, quantity) {
+  return {
+    token: "cart-token-1",
+    item_count: quantity,
+    total_price: totalPrice,
+    currency: "BGN",
+    items: [{ key: "1:abc", quantity: quantity, final_line_price: totalPrice }],
+  };
+}
+
+/** 40 → 60 and 60 → 40 through the implemented observation mechanisms. */
+function caseCartDynamicVisibility() {
+  var observerStub = createMutationObserverStub();
+  sandbox.MutationObserver = observerStub;
+  var cart = cartSnapshot(4000, 1);
+  stubCartFetch(function () {
+    return cart;
+  });
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi();
+  api.ensureCartObservation(fixture.slot);
+  fixture.slot.hidden = true; // Liquid: below minimum
+
+  return Promise.resolve()
+    .then(function () {
+      // Cart quantity raised to 60 → the theme redraws the Cart DOM.
+      cart = cartSnapshot(6000, 2);
+      fixture.form.appendChild(createEl("div", { id: "cart-line-2" }));
+      triggerCartRedraw(observerStub);
+      return settle();
+    })
+    .then(function () {
+      assert.strictEqual(
+        fixture.slot.hidden,
+        false,
+        "cart 40 → 60 shows the button without a page reload",
+      );
+      assert.strictEqual(
+        observerStub.instances.length,
+        1,
+        "exactly one observer drives the Cart update",
+      );
+      var instance = observerStub.instances[0];
+      assert.strictEqual(
+        instance.observed[0].target,
+        fixture.form,
+        "the observer watches the resolved Cart form only",
+      );
+      assertDeepEqual(
+        instance.observed[0].options,
+        { childList: true, subtree: true },
+        "childList + subtree only — never attributes (no hidden-toggle loop)",
+      );
+
+      // Cart quantity lowered back to 40 → scoped Cart control event.
+      cart = cartSnapshot(4000, 1);
+      dispatchBubblingEvent(fixture.quantity, "change");
+      return settle();
+    })
+    .then(function () {
+      assert.strictEqual(
+        fixture.slot.hidden,
+        true,
+        "cart 60 → 40 hides the button again",
+      );
+    });
+}
+
+/** Repeated initialization and section redraws must not stack watchers. */
+function caseCartNoDuplicateObservation() {
+  var observerStub = createMutationObserverStub();
+  sandbox.MutationObserver = observerStub;
+  stubCartFetch(function () {
+    return cartSnapshot(6000, 2);
+  });
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi();
+  var created = observerStub.instances.length;
+
+  api.ensureCartObservation(fixture.slot);
+  api.ensureCartObservation(fixture.slot);
+  api.ensureCartObservation(fixture.slot);
+  assert.strictEqual(
+    observerStub.instances.length,
+    created + 1,
+    "repeated initialization creates exactly one observer",
+  );
+  assert.strictEqual(
+    observerStub.instances[created].observed.length,
+    1,
+    "the observer is armed once, not re-armed per initialization",
+  );
+  assert.strictEqual(
+    api.cartWatch.bindings.length,
+    3,
+    "scoped Cart events (change/input/submit) are bound once",
+  );
+  assert.strictEqual(
+    api.cartWatch.containers.length,
+    1,
+    "the slot is registered once",
+  );
+
+  // Theme replaces the Cart section: the old scope is gone.
+  fixture.slot.isConnected = false;
+  var redraw = createCartFixture(5000);
+  api.ensureCartObservation(redraw.slot);
+  var instance = observerStub.instances[created];
+  assert.strictEqual(
+    observerStub.instances.length,
+    created + 1,
+    "section redraw reuses the single observer",
+  );
+  assert.strictEqual(
+    instance.observed.length,
+    2,
+    "the observer is re-armed once for the new scope",
+  );
+  assert.strictEqual(
+    instance.observed[1].target,
+    redraw.form,
+    "the observer is rebound to the new Cart form",
+  );
+  assert.strictEqual(
+    api.cartWatch.bindings.length,
+    3,
+    "scoped Cart events are rebound, not duplicated",
+  );
+  assert.strictEqual(
+    api.cartWatch.containers.length,
+    1,
+    "the detached slot is dropped",
+  );
+
+  api.applyCartVisibility(cartSnapshot(6000, 2));
+  assert.strictEqual(redraw.slot.hidden, false, "new slot follows the cart");
+  return Promise.resolve();
+}
+
+/** One Cart redraw must collapse into a single cart.js stability round. */
+async function caseCartCoalescedRechecks() {
+  var observerStub = createMutationObserverStub();
+  sandbox.MutationObserver = observerStub;
+  var timers = useQueuedTimers();
+  var reads = 0;
+  sandbox.fetch = function () {
+    reads += 1;
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve(cartSnapshot(6000, 2));
+      },
+    });
+  };
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi();
+  api.ensureCartObservation(fixture.slot);
+  reads = 0;
+
+  // A single Cart redraw bursts into several mutations.
+  for (var i = 0; i < 5; i++) {
+    fixture.form.appendChild(createEl("div", { id: "cart-line-" + i }));
+    triggerCartRedraw(observerStub);
+  }
+  assert.strictEqual(
+    timers.queue.length,
+    1,
+    "mutation burst collapses into one scheduled re-check",
+  );
+
+  for (var round = 0; round < 6; round++) {
+    timers.flush();
+    await new Promise(function (resolve) {
+      setImmediate(resolve);
+    });
+  }
+  timers.restore();
+
+  assert.strictEqual(
+    reads,
+    2,
+    "one cart.js stability round (2 reads) for the whole burst",
+  );
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "coalesced Cart update applied the visibility toggle",
+  );
+}
+
+/** A failed cart.js read must never throw, hide wrongly, or start CP. */
+function caseCartRefreshFailureIsSafe() {
+  var transportSpy = createTransportSpy();
+  sandbox.fetch = function () {
+    return Promise.reject(new Error("cart-http-500"));
+  };
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi(transportSpy);
+  api.ensureCartObservation(fixture.slot);
+  fixture.slot.hidden = true;
+
+  return api.refreshCartVisibility().then(function () {
+    assert.strictEqual(
+      fixture.slot.hidden,
+      true,
+      "failed Cart read keeps the current visibility",
+    );
+    assert.strictEqual(
+      transportSpy.calls.begin,
+      0,
+      "failed Cart read never reaches CP",
+    );
+    assert.ok(
+      fixture.form.contains(fixture.slot),
+      "failed Cart read keeps the slot in the DOM",
+    );
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Click-time safety: below minimum must never reach CP                       */
 /* -------------------------------------------------------------------------- */
@@ -1843,11 +2619,12 @@ function caseProductClickGateBlocksCpRequest() {
   var transportSpy = createTransportSpy();
   var fixture = createProductFixture({
     minMinor: 5000,
-    prices: '{"11":4999,"22":6000}',
+    prices: '{"11":3000,"22":2000}',
     variantId: "11",
+    quantity: 1,
   });
   var api = loadProductApi(transportSpy);
-  api.bindVariantChange(fixture.slot);
+  api.bindProductChange(fixture.slot);
   var button = { disabled: false };
 
   return api
@@ -1856,18 +2633,18 @@ function caseProductClickGateBlocksCpRequest() {
       assert.strictEqual(
         transportSpy.calls.begin,
         0,
-        "variant below minimum → no CP request",
+        "30.00 x 1 below minimum → no CP request",
       );
       assert.strictEqual(
         fixture.slot.hidden,
         true,
         "below-minimum slot hidden at click time",
       );
-      chooseVariant(fixture, 22);
+      chooseQuantity(fixture, 2);
       assert.strictEqual(
         fixture.slot.hidden,
         false,
-        "variant change restores visibility",
+        "30.00 x 2 = 60 → visibility restored by the quantity change",
       );
       return api.handleClick(fixture.slot, button);
     })
@@ -1875,30 +2652,41 @@ function caseProductClickGateBlocksCpRequest() {
       // The mock DOM cannot complete the modal, so begin() is the CP boundary.
       assert.ok(
         transportSpy.calls.begin >= 1,
-        "eligible variant reaches CP transport",
+        "eligible amount reaches CP transport",
       );
       assert.strictEqual(
         button.disabled,
         false,
         "button re-enabled after the attempt",
       );
+
+      // Variant drops to 20.00 with quantity 2 → 40 → below minimum again.
+      chooseVariant(fixture, 22);
+      assert.strictEqual(
+        fixture.slot.hidden,
+        true,
+        "variant + quantity combination below minimum hides the slot",
+      );
+      var before = transportSpy.calls.begin;
+      return api.handleClick(fixture.slot, button).then(function () {
+        assert.strictEqual(
+          transportSpy.calls.begin,
+          before,
+          "20.00 x 2 = 40 adds no CP request",
+        );
+      });
     });
 }
 
 function caseCartClickGateBlocksCpRequest() {
-  installDom(createEl("div", {}));
-  var cart = {
-    token: "cart-token-1",
-    item_count: 1,
-    total_price: 4999,
-    items: [{ key: "1:abc", quantity: 1, final_line_price: 4999 }],
-  };
+  var cart = cartSnapshot(4999, 1);
   stubCartFetch(function () {
     return cart;
   });
   var transportSpy = createTransportSpy();
+  var fixture = createCartFixture(5000);
   var api = loadCartApi(transportSpy);
-  var slot = createCartSlot(5000);
+  var slot = fixture.slot;
   var button = { disabled: false };
 
   return api
@@ -1915,12 +2703,7 @@ function caseCartClickGateBlocksCpRequest() {
         "stale below-minimum cart slot hidden at click time",
       );
       // Cart grows through the same cart.js path the integration already uses.
-      cart = {
-        token: "cart-token-1",
-        item_count: 1,
-        total_price: 6000,
-        items: [{ key: "1:abc", quantity: 1, final_line_price: 6000 }],
-      };
+      cart = cartSnapshot(6000, 2);
       return api.handleClick(slot, button);
     })
     .then(function () {
@@ -1933,16 +2716,36 @@ function caseCartClickGateBlocksCpRequest() {
         false,
         "button re-enabled after the attempt",
       );
+      // Cart shrinks back below the minimum → no further CP request.
+      cart = cartSnapshot(4000, 1);
+      var before = transportSpy.calls.begin;
+      return api.handleClick(slot, button).then(function () {
+        assert.strictEqual(
+          transportSpy.calls.begin,
+          before,
+          "cart below minimum adds no CP request",
+        );
+      });
     });
 }
 
 caseProductMinimumBoundaries();
-caseProductVariantTransition();
+caseProductAmountBoundaries();
+caseProductVariantAndQuantityTransitions();
+caseProductRebindDoesNotDuplicate();
+caseProductTwoSlotsStayIndependent();
+caseProductQuantityEventSources();
 caseProductPriceDataAndFallback();
 caseCartMinimumBoundaries();
+caseCartInitialStateFromLiquid();
+caseCartScopeSafety();
 
 async function runAsyncThresholdChecks() {
   await caseCartUpdateAcrossThreshold();
+  await caseCartDynamicVisibility();
+  await caseCartNoDuplicateObservation();
+  await caseCartCoalescedRechecks();
+  await caseCartRefreshFailureIsSafe();
   await caseProductClickGateBlocksCpRequest();
   await caseCartClickGateBlocksCpRequest();
 }

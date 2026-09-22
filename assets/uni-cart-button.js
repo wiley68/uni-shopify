@@ -59,6 +59,205 @@
     return total >= resolveMinimumMinor(container);
   }
 
+  /**
+   * Narrow Cart observation scope: the storefront Cart form (platform
+   * convention) when present, otherwise the surrounding theme section.
+   * document / document.body / documentElement are never observation targets.
+   */
+  var CART_FORM_SELECTOR = 'form[action*="/cart"]';
+  var CART_RECHECK_DELAY_MS = 200;
+  var CART_WATCH_EVENTS = ["change", "input", "submit"];
+
+  /** One-shot timer that still works when the host has no timer. */
+  var scheduleTimer =
+    typeof setTimeout === "function"
+      ? function (fn, delay) {
+          setTimeout(fn, delay);
+        }
+      : function (fn) {
+          fn();
+        };
+
+  function isCartForm(form) {
+    if (!(form instanceof HTMLFormElement)) return false;
+    var action = form.getAttribute("action") || "";
+    if (/cart\/add/.test(action)) return false;
+    return /\bcart\b/.test(action);
+  }
+
+  function themeSectionFor(container) {
+    if (!container || typeof container.closest !== "function") return null;
+    return container.closest(
+      ".shopify-section, [id^='shopify-section'], [data-section-id]",
+    );
+  }
+
+  function findCartForm(container) {
+    if (container && typeof container.closest === "function") {
+      var own = container.closest("form");
+      if (isCartForm(own)) return own;
+    }
+    var section = themeSectionFor(container);
+    var root = section || (typeof document !== "undefined" ? document : null);
+    if (!root || typeof root.querySelectorAll !== "function") return null;
+    var nodes = root.querySelectorAll(CART_FORM_SELECTOR);
+    var forms = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (isCartForm(nodes[i])) forms.push(nodes[i]);
+    }
+    // Only a uniquely determined Cart form is a valid scope.
+    return forms.length === 1 ? forms[0] : null;
+  }
+
+  function isObservableScope(node) {
+    if (!node || typeof node !== "object") return false;
+    if (typeof document === "undefined") return false;
+    if (
+      node === document ||
+      node === document.body ||
+      node === document.documentElement
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function resolveCartObservationScope(container) {
+    var scope = findCartForm(container) || themeSectionFor(container);
+    return isObservableScope(scope) ? scope : null;
+  }
+
+  /**
+   * One Cart watcher per page (idempotent): a MutationObserver scoped to the
+   * resolved Cart form/section listening to childList + subtree only (never
+   * attributes, so toggling `hidden` cannot re-trigger it) plus that same
+   * scope's own Cart control events. All bursts are coalesced into one cart.js
+   * read through the existing fetchStableCart() authority.
+   */
+  var cartWatch = {
+    containers: [],
+    scope: null,
+    observer: null,
+    bindings: [],
+    scheduled: false,
+    running: false,
+    rerun: false,
+  };
+
+  function registerCartContainer(container) {
+    if (!container || typeof container !== "object") return;
+    for (var i = cartWatch.containers.length - 1; i >= 0; i--) {
+      if (cartWatch.containers[i].isConnected === false) {
+        cartWatch.containers.splice(i, 1);
+      }
+    }
+    if (cartWatch.containers.indexOf(container) === -1) {
+      cartWatch.containers.push(container);
+    }
+  }
+
+  function bindCartScopeEvents(scope) {
+    if (!scope || typeof scope.addEventListener !== "function") return;
+    function onCartActivity() {
+      scheduleCartRecheck();
+    }
+    for (var i = 0; i < CART_WATCH_EVENTS.length; i++) {
+      scope.addEventListener(CART_WATCH_EVENTS[i], onCartActivity);
+      cartWatch.bindings.push({
+        scope: scope,
+        type: CART_WATCH_EVENTS[i],
+        handler: onCartActivity,
+      });
+    }
+  }
+
+  function unbindCartScopeEvents() {
+    for (var i = 0; i < cartWatch.bindings.length; i++) {
+      var binding = cartWatch.bindings[i];
+      if (
+        binding.scope &&
+        typeof binding.scope.removeEventListener === "function"
+      ) {
+        binding.scope.removeEventListener(binding.type, binding.handler);
+      }
+    }
+    cartWatch.bindings.length = 0;
+  }
+
+  function connectCartObserver(scope) {
+    if (typeof MutationObserver !== "function") return;
+    if (!cartWatch.observer) {
+      cartWatch.observer = new MutationObserver(function () {
+        scheduleCartRecheck();
+      });
+    }
+    cartWatch.observer.observe(scope, { childList: true, subtree: true });
+  }
+
+  /**
+   * Register this slot and (re)bind the single Cart watcher. Repeated
+   * initialization is a no-op; a replaced Cart section is rebound after the
+   * old scope is disconnected, so observers/listeners never accumulate.
+   */
+  function ensureCartObservation(container) {
+    registerCartContainer(container);
+    var scope = resolveCartObservationScope(container);
+    if (!scope) return;
+    if (cartWatch.scope === scope && scope.isConnected !== false) return;
+    unbindCartScopeEvents();
+    if (cartWatch.observer && cartWatch.scope && cartWatch.scope !== scope) {
+      cartWatch.observer.disconnect();
+    }
+    cartWatch.scope = scope;
+    bindCartScopeEvents(scope);
+    connectCartObserver(scope);
+  }
+
+  function scheduleCartRecheck() {
+    if (cartWatch.scheduled) return; // coalesce bursts of mutations/events
+    cartWatch.scheduled = true;
+    scheduleTimer(function () {
+      cartWatch.scheduled = false;
+      refreshCartVisibility();
+    }, CART_RECHECK_DELAY_MS);
+  }
+
+  /**
+   * Re-read the Cart through the existing authoritative mechanism and toggle
+   * the existing slots in place (never removed, never recreated).
+   * Never starts CP, never throws: a failed read keeps the current state.
+   */
+  function refreshCartVisibility() {
+    if (!cartWatch.containers.length) return Promise.resolve();
+    if (cartWatch.running) {
+      cartWatch.rerun = true; // at most one queued re-run per burst
+      return Promise.resolve();
+    }
+    cartWatch.running = true;
+    return fetchStableCart()
+      .then(function (cart) {
+        applyCartVisibility(cart);
+      })
+      .catch(function () {
+        // Transient cart.js failure: keep current visibility, no CP, no throw.
+      })
+      .then(function () {
+        cartWatch.running = false;
+        if (cartWatch.rerun) {
+          cartWatch.rerun = false;
+          refreshCartVisibility();
+        }
+      });
+  }
+
+  function applyCartVisibility(cart) {
+    for (var i = 0; i < cartWatch.containers.length; i++) {
+      var container = cartWatch.containers[i];
+      if (!container || container.isConnected === false) continue;
+      container.hidden = !isCartAboveMinimum(container, cart);
+    }
+  }
+
   function delay(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
@@ -260,6 +459,12 @@
         return;
       }
 
+      // Same authoritative snapshot also refreshes visibility that the scoped
+      // watcher may have missed, and re-arms the watcher if the theme replaced
+      // the Cart section without a section:load.
+      ensureCartObservation(container);
+      applyCartVisibility(cart);
+
       postToIframe(payload);
     } catch (error) {
       var code = error && error.message ? error.message : "";
@@ -291,6 +496,7 @@
         button.addEventListener("click", function () {
           handleClick(container, button);
         });
+        ensureCartObservation(container);
       });
   }
 
@@ -312,6 +518,13 @@
       isCartAboveMinimum: isCartAboveMinimum,
       fetchStableCart: fetchStableCart,
       handleClick: handleClick,
+      resolveCartObservationScope: resolveCartObservationScope,
+      isObservableScope: isObservableScope,
+      ensureCartObservation: ensureCartObservation,
+      scheduleCartRecheck: scheduleCartRecheck,
+      refreshCartVisibility: refreshCartVisibility,
+      applyCartVisibility: applyCartVisibility,
+      cartWatch: cartWatch,
     };
   }
 })();

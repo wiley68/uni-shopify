@@ -35,9 +35,23 @@ Unit: whole major units of the store currency. Shopify money values
 uni_min_price x 100. All comparisons are integer comparisons.
 
 Local gate (decided in the browser, before any CP request):
-  selected variant price < uni_min_price  -> button hidden, no CP POST
-  cart total             < uni_min_price  -> button hidden, no CP POST
-  amount >= uni_min_price                 -> existing eligibility continues
+  product amount = selected variant price x selected quantity
+  product amount < uni_min_price  -> button hidden, no CP POST
+  cart total     < uni_min_price  -> button hidden, no CP POST
+  amount >= uni_min_price         -> existing eligibility continues
+
+Dynamic visibility (slots stay in the DOM; only the hidden attribute toggles):
+  Product: scoped change/input on the resolved add-to-cart form (or theme
+           section) plus the one resolved quantity control, so variant and
+           quantity changes both re-sync. Quantity without a usable control
+           counts as 1. Liquid cannot read the theme's initial quantity, so the
+           first render assumes quantity 1 and JS re-syncs on init.
+  Cart:    scoped MutationObserver (childList + subtree only, never attributes)
+           on the resolved Cart form, else the theme section, plus that scope's
+           own change/input/submit events. Bursts are coalesced into a single
+           fetchStableCart() read. No document-level observation, no polling.
+  Click-time minimum checks (product price x quantity, cart total) are
+  unchanged and remain the final local guard before any CP request.
 
 Shopify "number" settings cannot enforce positive integers, so the value is
 validated defensively in Liquid and again in JS: missing, zero, negative,
@@ -142,7 +156,8 @@ snippets/
     - Custom Liquid (cart page): {% render 'uni-cart-button' %}
     - requires settings.uni_status + settings.uni_unicid
     - Liquid cart is NOT authoritative; JS uses cart.js on click
-    - embeds data-uni-min-price; the local minimum gate uses cart.js on click
+    - embeds data-uni-min-price; cart.js (fetchStableCart) drives both the
+      click-time and the dynamic minimum checks
 
 assets/
   uni-transport.js
@@ -291,7 +306,8 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] currency is presentment (matches Ajax amounts), not blind shop.currency
    [ ] products[].collection_ids present (array; may be empty)
    [ ] echo: source=product, products[1], total_price_cents
-   [ ] uni_min_price gate: variant price below minimum -> button hidden, no POST
+   [ ] uni_min_price gate: variant price x quantity below minimum -> hidden, no POST
+   [ ] quantity/variant change re-syncs button visibility without page reload
 
    Cart runtime:
    [ ] cart.js is source of truth (after quantity Ajax updates)
@@ -300,6 +316,7 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] empty cart → no POST
    [ ] no currency, products, totals, quantities, prices, or collection IDs sent
    [ ] uni_min_price gate: cart total below minimum -> button hidden, no POST
+   [ ] cart quantity/line change re-syncs button visibility without page reload
 
    Shared modal:
    [ ] only one Uni modal active (Product vs Cart mutual exclusion)
