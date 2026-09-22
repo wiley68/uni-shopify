@@ -10,14 +10,40 @@
     {% assign uni_btn_text = 'Купи на изплащане' %}
   {% endif %}
 
+  {%- comment -%}
+    Local financing minimum (uni_min_price): whole major units, default 50.
+    Shopify "number" settings cannot enforce positive integers, so invalid
+    configuration falls back to 50 here and again in uni-product-button.js.
+    Shopify money values are minor units (1/100 for BGN/EUR), so the
+    threshold is converted once and every later comparison is integer.
+  {%- endcomment -%}
+  {%- assign uni_min_major = settings.uni_min_price | plus: 0 -%}
+  {%- assign uni_min_whole = uni_min_major | floor -%}
+  {%- if uni_min_major != uni_min_whole -%}
+    {%- assign uni_min_major = 0 -%}
+  {%- endif -%}
+  {%- if uni_min_major < 1 -%}
+    {%- assign uni_min_major = 50 -%}
+  {%- endif -%}
+  {%- assign uni_min_minor = uni_min_major | times: 100 -%}
+  {%- assign uni_initial_price = product.selected_or_first_available_variant.price | plus: 0 -%}
+  {%- capture uni_variant_prices -%}
+    {%- for uni_variant in product.variants -%}
+      {%- unless forloop.first -%},{%- endunless -%}"{{ uni_variant.id }}":{{ uni_variant.price }}
+    {%- endfor -%}
+  {%- endcapture -%}
+
   <div
     class="uni-product-slot"
     data-uni-product-button
     data-unicid="{{ uni_unicid | escape }}"
     data-initial-variant-id="{{ product.selected_or_first_available_variant.id }}"
+    data-uni-min-price="{{ uni_min_minor }}"
+    data-uni-variant-prices="{ {{ uni_variant_prices | strip | escape }} }"
     data-shop-domain="{{ shop.domain | escape }}"
     data-shop-permanent-domain="{{ shop.permanent_domain | escape }}"
     style="--uni-max-width: {{ settings.uni_btn_max_width | default: 570 }}px; --uni-button-height: {{ settings.uni_btn_height | default: 52 }}px; --uni-button-radius: {{ settings.uni_btn_round | default: 26 }}px; --uni-button-margin-top: {{ settings.uni_btn_margin_top | default: 0 }}px;"
+    {% if uni_initial_price < uni_min_minor %}hidden{% endif %}
   >
     {{ 'uni-product-button.css' | asset_url | stylesheet_tag }}
     <script src="{{ 'uni-transport.js' | asset_url }}" defer></script>

@@ -6,6 +6,11 @@
   margin-top: var(--uni-button-margin-top, 0);
 }
 
+/* Local minimum gate: Liquid/JS set hidden when the amount is below minimum. */
+.uni-product-slot[hidden] {
+  display: none;
+}
+
 .uni-product-button {
   box-sizing: border-box;
   display: flex;

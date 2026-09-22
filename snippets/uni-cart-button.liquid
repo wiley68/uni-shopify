@@ -11,13 +11,33 @@
     {% assign uni_btn_text = 'Купи на изплащане' %}
   {% endif %}
 
+  {%- comment -%}
+    Local financing minimum (uni_min_price): whole major units, default 50.
+    Shopify "number" settings cannot enforce positive integers, so invalid
+    configuration falls back to 50 here and again in uni-cart-button.js.
+    Liquid cart.total_price and cart.js total_price are the same minor-unit
+    amount (1/100 for BGN/EUR), so the threshold is converted once.
+  {%- endcomment -%}
+  {%- assign uni_min_major = settings.uni_min_price | plus: 0 -%}
+  {%- assign uni_min_whole = uni_min_major | floor -%}
+  {%- if uni_min_major != uni_min_whole -%}
+    {%- assign uni_min_major = 0 -%}
+  {%- endif -%}
+  {%- if uni_min_major < 1 -%}
+    {%- assign uni_min_major = 50 -%}
+  {%- endif -%}
+  {%- assign uni_min_minor = uni_min_major | times: 100 -%}
+  {%- assign uni_cart_total = cart.total_price | plus: 0 -%}
+
   <div
     class="uni-cart-slot"
     data-uni-cart-button
     data-unicid="{{ uni_unicid | escape }}"
+    data-uni-min-price="{{ uni_min_minor }}"
     data-shop-domain="{{ shop.domain | escape }}"
     data-shop-permanent-domain="{{ shop.permanent_domain | escape }}"
     style="--uni-max-width: {{ settings.uni_btn_max_width | default: 570 }}px; --uni-button-height: {{ settings.uni_btn_height | default: 52 }}px; --uni-button-radius: {{ settings.uni_btn_round | default: 26 }}px; --uni-button-margin-top: {{ settings.uni_btn_margin_top | default: 0 }}px;"
+    {% if uni_cart_total < uni_min_minor %}hidden{% endif %}
   >
     {{ 'uni-cart-button.css' | asset_url | stylesheet_tag }}
     <script src="{{ 'uni-transport.js' | asset_url }}" defer></script>

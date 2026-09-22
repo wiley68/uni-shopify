@@ -9,6 +9,56 @@
   var GLOBALS_KEY = "__uniCartButtonGlobalsBound";
   var requestInProgress = false;
 
+  /**
+   * Local financing minimum (uni_min_price).
+   * Merchants configure whole major units; Liquid renders minor units.
+   * Missing/invalid configuration falls back to 50 (5000 minor units).
+   */
+  var DEFAULT_MIN_PRICE_MAJOR = 50;
+  var MINOR_UNITS_FACTOR = 100;
+  var DEFAULT_MIN_PRICE_MINOR = DEFAULT_MIN_PRICE_MAJOR * MINOR_UNITS_FACTOR;
+
+  function positiveInteger(value) {
+    var text = String(value == null ? "" : value).trim();
+    if (!/^\d+$/.test(text)) return null;
+    var number = Number(text);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  }
+
+  /** Non-negative integer — a cart amount may legitimately be 0. */
+  function nonNegativeInteger(value) {
+    var text = String(value == null ? "" : value).trim();
+    if (!/^\d+$/.test(text)) return null;
+    var number = Number(text);
+    return Number.isSafeInteger(number) ? number : null;
+  }
+
+  /**
+   * Configured minimum in minor units (Liquid already applied the fallback).
+   * Never falls back to zero/unlimited.
+   */
+  function resolveMinimumMinor(container) {
+    var configured = positiveInteger(
+      container && container.dataset ? container.dataset.uniMinPrice : null,
+    );
+    return configured ? configured : DEFAULT_MIN_PRICE_MINOR;
+  }
+
+  /**
+   * Local minimum gate on the current cart amount. Uses the cart.js
+   * total_price already fetched by fetchStableCart() — same minor-unit field
+   * Liquid renders for the initial hidden state, not a second cart total.
+   * An unavailable amount keeps the pre-existing eligibility behavior.
+   */
+  function isCartAboveMinimum(container, cart) {
+    var total =
+      cart && typeof cart === "object"
+        ? nonNegativeInteger(cart.total_price)
+        : null;
+    if (total == null) return true;
+    return total >= resolveMinimumMinor(container);
+  }
+
   function delay(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
@@ -204,6 +254,12 @@
 
       if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
+      // Local minimum gate: a cart below uni_min_price never reaches CP.
+      if (!isCartAboveMinimum(container, cart)) {
+        container.hidden = true;
+        return;
+      }
+
       postToIframe(payload);
     } catch (error) {
       var code = error && error.message ? error.message : "";
@@ -252,6 +308,10 @@
   if (typeof window !== "undefined" && window.__UNI_ENABLE_CART_TEST_API) {
     window.__UniCartTestApi = {
       buildPayload: buildPayload,
+      resolveMinimumMinor: resolveMinimumMinor,
+      isCartAboveMinimum: isCartAboveMinimum,
+      fetchStableCart: fetchStableCart,
+      handleClick: handleClick,
     };
   }
 })();

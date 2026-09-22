@@ -10,11 +10,38 @@
   var GLOBALS_KEY = "__uniProductButtonGlobalsBound";
   var requestInProgress = false;
 
+  /**
+   * Local financing minimum (uni_min_price).
+   * Merchants configure whole major units; Liquid renders minor units.
+   * Missing/invalid configuration falls back to 50 (5000 minor units).
+   */
+  var DEFAULT_MIN_PRICE_MAJOR = 50;
+  var MINOR_UNITS_FACTOR = 100;
+  var DEFAULT_MIN_PRICE_MINOR = DEFAULT_MIN_PRICE_MAJOR * MINOR_UNITS_FACTOR;
+
+  /** One-tick deferral so theme variant handlers settle before re-checking. */
+  var scheduleTick =
+    typeof setTimeout === "function"
+      ? function (fn) {
+          setTimeout(fn, 0);
+        }
+      : function (fn) {
+          fn();
+        };
+
   function positiveInteger(value) {
     var text = String(value == null ? "" : value).trim();
     if (!/^\d+$/.test(text)) return null;
     var number = Number(text);
     return Number.isSafeInteger(number) && number > 0 ? number : null;
+  }
+
+  /** Non-negative integer — prices may legitimately be 0 (below any minimum). */
+  function nonNegativeInteger(value) {
+    var text = String(value == null ? "" : value).trim();
+    if (!/^\d+$/.test(text)) return null;
+    var number = Number(text);
+    return Number.isSafeInteger(number) ? number : null;
   }
 
   function isAddToCartForm(form) {
@@ -301,6 +328,79 @@
     return positiveInteger(container.dataset.initialVariantId);
   }
 
+  /**
+   * Configured minimum in minor units (Liquid already applied the fallback).
+   * Never falls back to zero/unlimited.
+   */
+  function resolveMinimumMinor(container) {
+    var configured = positiveInteger(
+      container && container.dataset ? container.dataset.uniMinPrice : null,
+    );
+    return configured ? configured : DEFAULT_MIN_PRICE_MINOR;
+  }
+
+  /**
+   * Selected variant price in minor units, taken from the variant price map
+   * Liquid already rendered for this product. Local data only — no Shopify
+   * request, no polling.
+   * @returns {number|null} null when no local price is available
+   */
+  function resolveVariantPriceMinor(container, variantId) {
+    var raw =
+      container && container.dataset ? container.dataset.uniVariantPrices : null;
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    var map = null;
+    try {
+      map = JSON.parse(raw);
+    } catch (_ignored) {
+      return null;
+    }
+    if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+    var key = String(variantId);
+    if (!Object.prototype.hasOwnProperty.call(map, key)) return null;
+    return nonNegativeInteger(map[key]);
+  }
+
+  /**
+   * Local minimum gate: financing continues only when the selected variant is
+   * known and priced at or above the configured minimum. An unavailable local
+   * price keeps the pre-existing eligibility behavior.
+   */
+  function isPriceAboveMinimum(container, variantId) {
+    if (!variantId) return false;
+    var price = resolveVariantPriceMinor(container, variantId);
+    if (price == null) return true;
+    return price >= resolveMinimumMinor(container);
+  }
+
+  /**
+   * Keep the slot visible only while the selected variant passes the local
+   * minimum. The server-rendered hidden state is the initial value; this only
+   * re-syncs after variant changes.
+   */
+  function syncSlotVisibility(container) {
+    var variantId = resolveVariantId(container);
+    var eligible = variantId ? isPriceAboveMinimum(container, variantId) : true;
+    container.hidden = !eligible;
+    return eligible;
+  }
+
+  /**
+   * Variant changes: one listener scoped to the current add-to-cart form
+   * (proven Shopify variant control container), falling back to the theme
+   * section. No document-level listeners, no polling.
+   */
+  function bindVariantChange(container) {
+    var scope = findProductForm(container) || findProductSection(container);
+    if (!scope || typeof scope.addEventListener !== "function") return;
+    scope.addEventListener("change", function () {
+      // Defer one tick so theme variant handlers settle the selection first.
+      scheduleTick(function () {
+        syncSlotVisibility(container);
+      });
+    });
+  }
+
   function buildPayload(container, variantId, quantity) {
     return {
       payload_version: 2,
@@ -443,6 +543,12 @@
 
       if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
+      // Local minimum gate: a variant below uni_min_price never reaches CP.
+      if (!isPriceAboveMinimum(container, variantId)) {
+        container.hidden = true;
+        return;
+      }
+
       postToIframe(payload);
     } catch (_error) {
       showError(
@@ -463,6 +569,8 @@
         var button = container.querySelector(".uni-product-button");
         if (!(button instanceof HTMLButtonElement)) return;
         container.dataset.uniInitialized = "true";
+        syncSlotVisibility(container);
+        bindVariantChange(container);
         button.addEventListener("click", function () {
           handleClick(container, button);
         });
@@ -487,6 +595,12 @@
       buildPayload: buildPayload,
       findProductForm: findProductForm,
       findProductSection: findProductSection,
+      resolveMinimumMinor: resolveMinimumMinor,
+      resolveVariantPriceMinor: resolveVariantPriceMinor,
+      isPriceAboveMinimum: isPriceAboveMinimum,
+      syncSlotVisibility: syncSlotVisibility,
+      bindVariantChange: bindVariantChange,
+      handleClick: handleClick,
     };
   }
 })();

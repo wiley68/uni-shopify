@@ -23,6 +23,35 @@ Trust boundary:
   Domains/unicid/currency/money are public context, not authentication.
 
 ================================================================================
+Local financing minimum (uni_min_price) - local eligibility gate
+================================================================================
+
+Theme setting (canonical UniCredit settings block in step 5 below):
+  id: uni_min_price   type: number   default: 50
+
+Unit: whole major units of the store currency. Shopify money values
+(variant price, Liquid cart.total_price, cart.js total_price) are minor units
+(1/100 for the supported currencies), so the threshold is compared as
+uni_min_price x 100. All comparisons are integer comparisons.
+
+Local gate (decided in the browser, before any CP request):
+  selected variant price < uni_min_price  -> button hidden, no CP POST
+  cart total             < uni_min_price  -> button hidden, no CP POST
+  amount >= uni_min_price                 -> existing eligibility continues
+
+Shopify "number" settings cannot enforce positive integers, so the value is
+validated defensively in Liquid and again in JS: missing, zero, negative,
+fractional or non-numeric configuration falls back to 50. The gate never
+falls back to 0/unlimited.
+
+This gate is local only. It does NOT change the frozen CP contracts: no
+uni_min_price, price, cart amount or eligibility result is ever POSTed.
+
+Deployment: config/settings_schema.json is intentionally NOT committed, so an
+existing merchant theme must add the uni_min_price entry manually to the
+UniCredit settings block from this file (step 5). No CP deployment is needed.
+
+================================================================================
 Theme compatibility policy
 ================================================================================
 
@@ -108,10 +137,12 @@ snippets/
     - Custom Liquid (product page): {% render 'uni-product-button', product: product %}
     - requires settings.uni_status + settings.uni_unicid + product
     - embeds data-uni-collection-ids from product.collections (numeric IDs)
+    - embeds data-uni-min-price + data-uni-variant-prices for the local minimum gate
   uni-cart-button.liquid
     - Custom Liquid (cart page): {% render 'uni-cart-button' %}
     - requires settings.uni_status + settings.uni_unicid
     - Liquid cart is NOT authoritative; JS uses cart.js on click
+    - embeds data-uni-min-price; the local minimum gate uses cart.js on click
 
 assets/
   uni-transport.js
@@ -160,6 +191,13 @@ No CP calculator / SmartUCF / order creation in theme.
          "id": "uni_unicid",
          "label": "Уникален идентификационен код на магазина Ви",
          "info": "Уникален идентификационен код на магазина Ви в системата на УниКредит."
+       },
+       {
+         "type": "number",
+         "id": "uni_min_price",
+         "label": "Минимална сума за кредит",
+         "info": "Минимално възможна сума на стоките за закупуване на кредит с УниКредит",
+         "default": 50
        },
        {
          "type": "text",
@@ -253,6 +291,7 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] currency is presentment (matches Ajax amounts), not blind shop.currency
    [ ] products[].collection_ids present (array; may be empty)
    [ ] echo: source=product, products[1], total_price_cents
+   [ ] uni_min_price gate: variant price below minimum -> button hidden, no POST
 
    Cart runtime:
    [ ] cart.js is source of truth (after quantity Ajax updates)
@@ -260,6 +299,7 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] POST contains only the six Cart payload v2 fields
    [ ] empty cart → no POST
    [ ] no currency, products, totals, quantities, prices, or collection IDs sent
+   [ ] uni_min_price gate: cart total below minimum -> button hidden, no POST
 
    Shared modal:
    [ ] only one Uni modal active (Product vs Cart mutual exclusion)

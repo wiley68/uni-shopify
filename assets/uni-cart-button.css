@@ -11,6 +11,11 @@
   grid-column: 1 / -1;
 }
 
+/* Local minimum gate: Liquid/JS set hidden when the amount is below minimum. */
+.uni-cart-slot[hidden] {
+  display: none;
+}
+
 .uni-cart-button {
   box-sizing: border-box;
   display: flex;

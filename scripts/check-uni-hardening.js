@@ -38,6 +38,10 @@ var sandbox = {
     },
   },
   addEventListener: function () {},
+  setTimeout: function (fn) {
+    if (typeof fn === "function") fn();
+    return 0;
+  },
   Shopify: { routes: { root: "/" }, currency: { active: "eur" } },
   __UNI_ENABLE_PRODUCT_TEST_API: true,
 };
@@ -549,6 +553,7 @@ function matchesSimple(el, selector) {
   }
   if (selector === "[data-section-id]")
     return el.attrs["data-section-id"] != null;
+  if (selector === '[name="id"]') return el.attrs.name === "id";
   if (selector === 'input[name="quantity"]') {
     return el.tagName === "INPUT" && el.attrs.name === "quantity";
   }
@@ -622,6 +627,7 @@ function matchesCompound(el, selector) {
 
 function createEl(tagName, attrs) {
   attrs = attrs || {};
+  var listeners = {};
   var el = {
     tagName: String(tagName).toUpperCase(),
     attrs: attrs,
@@ -629,6 +635,7 @@ function createEl(tagName, attrs) {
     parentNode: null,
     disabled: !!attrs.disabled,
     hidden: !!attrs.hidden,
+    __listeners: listeners,
     get id() {
       return this.attrs.id;
     },
@@ -663,7 +670,26 @@ function createEl(tagName, attrs) {
       };
     },
     get dataset() {
-      return {};
+      var out = {};
+      Object.keys(el.attrs).forEach(function (key) {
+        if (key.indexOf("data-") !== 0) return;
+        var parts = key.slice(5).split("-");
+        var name = parts[0];
+        for (var i = 1; i < parts.length; i++) {
+          name += parts[i].charAt(0).toUpperCase() + parts[i].slice(1);
+        }
+        out[name] = String(el.attrs[key]);
+      });
+      return out;
+    },
+    addEventListener: function (type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    removeEventListener: function (type, fn) {
+      var list = listeners[type] || [];
+      var index = list.indexOf(fn);
+      if (index !== -1) list.splice(index, 1);
     },
     getAttribute: function (name) {
       var key = String(name);
@@ -760,10 +786,10 @@ function installDom(rootEl) {
   };
 }
 
-function loadProductApi() {
+function loadProductApi(transportImpl) {
   delete sandbox.__UniProductTestApi;
   sandbox.__UNI_ENABLE_PRODUCT_TEST_API = true;
-  sandbox.__UniTransport = T;
+  sandbox.__UniTransport = transportImpl || T;
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   vm.runInNewContext(fs.readFileSync(productPath, "utf8"), sandbox, {
@@ -1025,10 +1051,10 @@ caseProductPayloadV2IsMinimal();
 /* Collection IDs — Cart legacy fixtures                                     */
 /* -------------------------------------------------------------------------- */
 
-function loadCartApi() {
+function loadCartApi(transportImpl) {
   delete sandbox.__UniCartTestApi;
   sandbox.__UNI_ENABLE_CART_TEST_API = true;
-  sandbox.__UniTransport = T;
+  sandbox.__UniTransport = transportImpl || T;
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   sandbox.DOMParser = function DOMParser() {
@@ -1255,4 +1281,678 @@ function caseCartPayloadRejectsMissingIdentity() {
 caseCartPayloadIncludesExactIdentity();
 caseCartPayloadRejectsMissingIdentity();
 
-console.log("check-uni-hardening: OK");
+/* -------------------------------------------------------------------------- */
+/* uni_min_price — minimal local financing threshold (Product + Cart)         */
+/* -------------------------------------------------------------------------- */
+
+var procedureText = fs.readFileSync(
+  path.join(root, "shopify-theme-procedure.txt"),
+  "utf8",
+);
+var cartLiquid = fs.readFileSync(
+  path.join(root, "snippets", "uni-cart-button.liquid"),
+  "utf8",
+);
+var productCss = fs.readFileSync(
+  path.join(root, "assets", "uni-product-button.css"),
+  "utf8",
+);
+var cartCss = fs.readFileSync(
+  path.join(root, "assets", "uni-cart-button.css"),
+  "utf8",
+);
+
+/* C — canonical UniCredit settings block (manual Shopify deployment) */
+assert.ok(
+  procedureText.indexOf("uni_min_price") !== -1,
+  "uni_min_price documented",
+);
+var minSettingAt = procedureText.indexOf('"id": "uni_min_price"');
+assert.ok(minSettingAt !== -1, "uni_min_price schema entry present");
+var minSettingBlock = procedureText.slice(
+  Math.max(0, minSettingAt - 200),
+  minSettingAt + 300,
+);
+assert.ok(
+  minSettingBlock.indexOf('"type": "number"') !== -1,
+  "uni_min_price uses the number setting type",
+);
+assert.ok(
+  minSettingBlock.indexOf('"default": 50') !== -1,
+  "uni_min_price default is 50",
+);
+assert.ok(
+  procedureText.indexOf(
+    "\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u043d\u0430 \u0441\u0443\u043c\u0430 \u0437\u0430 \u043a\u0440\u0435\u0434\u0438\u0442",
+  ) !== -1,
+  "Bulgarian label present",
+);
+assert.ok(
+  procedureText.indexOf(
+    "\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u043d\u043e \u0432\u044a\u0437\u043c\u043e\u0436\u043d\u0430 \u0441\u0443\u043c\u0430 \u043d\u0430 \u0441\u0442\u043e\u043a\u0438\u0442\u0435 \u0437\u0430 \u0437\u0430\u043a\u0443\u043f\u0443\u0432\u0430\u043d\u0435 \u043d\u0430 \u043a\u0440\u0435\u0434\u0438\u0442 \u0441 \u0423\u043d\u0438\u041a\u0440\u0435\u0434\u0438\u0442",
+  ) !== -1,
+  "Bulgarian info present",
+);
+assert.ok(
+  procedureText.indexOf("cannot enforce positive integers") !== -1,
+  "documented: Shopify number settings cannot enforce positive integers",
+);
+assert.ok(
+  procedureText.indexOf(
+    "config/settings_schema.json is intentionally NOT committed",
+  ) !== -1,
+  "documented: manual settings_schema.json deployment",
+);
+assert.strictEqual(
+  fs.existsSync(path.join(root, "config", "settings_schema.json")),
+  false,
+  "settings_schema.json must stay uncommitted",
+);
+
+/* Money units: Liquid renders minor units, JS compares integers only */
+assert.ok(productLiquid.indexOf("times: 100") !== -1, "product major to minor");
+assert.ok(cartLiquid.indexOf("times: 100") !== -1, "cart major to minor");
+assert.ok(
+  productLiquid.indexOf("data-uni-min-price") !== -1 &&
+    cartLiquid.indexOf("data-uni-min-price") !== -1,
+  "both slots carry the configured minimum",
+);
+assert.ok(
+  productLiquid.indexOf("data-uni-variant-prices") !== -1,
+  "product slot carries locally rendered variant prices",
+);
+assert.ok(
+  productLiquid.indexOf("hidden") !== -1 && cartLiquid.indexOf("hidden") !== -1,
+  "server-rendered initial hidden gate",
+);
+assert.ok(
+  cartLiquid.indexOf("cart.total_price") !== -1,
+  "cart Liquid uses the cart amount",
+);
+assert.ok(
+  productCss.indexOf(".uni-product-slot[hidden]") !== -1 &&
+    cartCss.indexOf(".uni-cart-slot[hidden]") !== -1,
+  "hidden slot CSS wins over display:block",
+);
+
+/* Scope audit: no polling, no new endpoints, no document-level listeners */
+assert.strictEqual(
+  /setInterval\s*\(/.test(productJs),
+  false,
+  "no polling (product)",
+);
+assert.strictEqual(/setInterval\s*\(/.test(cartJs), false, "no polling (cart)");
+assert.strictEqual(
+  /document\.addEventListener\(\s*["']change/.test(productJs),
+  false,
+  "no document-level change listener (product)",
+);
+assert.strictEqual(
+  /document\.addEventListener\(\s*["']change/.test(cartJs),
+  false,
+  "no document-level change listener (cart)",
+);
+assert.strictEqual(
+  productJs.indexOf("variants/"),
+  -1,
+  "no variant Ajax endpoint (product)",
+);
+assert.strictEqual(
+  cartJs.indexOf("variants/"),
+  -1,
+  "no variant Ajax endpoint (cart)",
+);
+assert.strictEqual(
+  /parseFloat/.test(productJs),
+  false,
+  "integer-only money comparison (product)",
+);
+assert.strictEqual(
+  /parseFloat/.test(cartJs),
+  false,
+  "integer-only money comparison (cart)",
+);
+assert.ok(
+  productJs.indexOf("DEFAULT_MIN_PRICE_MINOR") !== -1 &&
+    cartJs.indexOf("DEFAULT_MIN_PRICE_MINOR") !== -1,
+  "documented fallback constant in both assets",
+);
+
+(function assertVariantChangeListenerScoped() {
+  var fn = productJs.indexOf("function bindVariantChange");
+  assert.ok(fn !== -1, "bindVariantChange present");
+  var next = productJs.indexOf("\n  function ", fn + 10);
+  var body = productJs.slice(fn, next === -1 ? productJs.length : next);
+  assert.ok(
+    body.indexOf("findProductForm(container)") !== -1,
+    "product form scope preferred",
+  );
+  assert.ok(
+    body.indexOf("findProductSection(container)") !== -1,
+    "theme section fallback scope",
+  );
+  assert.ok(
+    body.indexOf('addEventListener("change"') !== -1,
+    "change listener bound on the resolved scope",
+  );
+  assert.ok(body.indexOf("document") === -1, "no document-level binding");
+  assert.ok(
+    body.indexOf("querySelectorAll") === -1,
+    "no per-control listener sweep",
+  );
+})();
+
+(function assertInitializeAppliesGate() {
+  var fn = productJs.indexOf("function initialize");
+  var body = productJs.slice(
+    fn,
+    productJs.indexOf("function registerGlobalsOnce", fn),
+  );
+  assert.ok(
+    body.indexOf("syncSlotVisibility(container)") !== -1,
+    "initialize applies the local gate",
+  );
+  assert.ok(
+    body.indexOf("bindVariantChange(container)") !== -1,
+    "initialize binds variant changes",
+  );
+})();
+
+(function assertLocalGatePrecedesCpPost() {
+  var pStart = productJs.indexOf("async function handleClick");
+  var pBody = productJs.slice(
+    pStart,
+    productJs.indexOf("function initialize", pStart),
+  );
+  var pGate = pBody.indexOf("isPriceAboveMinimum");
+  var pPost = pBody.indexOf("postToIframe");
+  assert.ok(
+    pGate !== -1 && pPost !== -1 && pGate < pPost,
+    "product local gate precedes CP POST",
+  );
+
+  var cStart = cartJs.indexOf("async function handleClick");
+  var cBody = cartJs.slice(
+    cStart,
+    cartJs.indexOf("function initialize", cStart),
+  );
+  var cGate = cBody.indexOf("isCartAboveMinimum");
+  var cPost = cBody.indexOf("postToIframe");
+  assert.ok(
+    cGate !== -1 && cPost !== -1 && cGate < cPost,
+    "cart local gate precedes CP POST",
+  );
+})();
+
+var productPayloadBuilder = productJs.slice(
+  productJs.indexOf("function buildPayload"),
+  productJs.indexOf("function showError"),
+);
+assert.ok(
+  productPayloadBuilder.indexOf("MinPrice") === -1 &&
+    cartPayloadBuilder.indexOf("MinPrice") === -1,
+  "minimum gate is never part of the CP payload",
+);
+
+/* -------------------------------------------------------------------------- */
+/* Fixtures: Liquid-rendered attributes only (no live Shopify)                */
+/* -------------------------------------------------------------------------- */
+
+function dispatchBubblingEvent(target, type) {
+  var node = target;
+  while (node) {
+    var list = (node.__listeners && node.__listeners[type]) || [];
+    for (var i = 0; i < list.length; i++) {
+      list[i].call(node, { type: type, target: target });
+    }
+    node = node.parentNode;
+  }
+}
+
+function createProductFixture(options) {
+  options = options || {};
+  var wrap = createEl("div", {});
+  var form = createEl("form", {
+    id: "product-form",
+    action: "/cart/add",
+    class: "product-form",
+  });
+  var slotAttrs = {
+    id: "uni-product-slot",
+    "data-uni-product-button": "",
+    "data-unicid": "merchant-1",
+    "data-shop-domain": "shop.example",
+    "data-shop-permanent-domain": "shop.myshopify.com",
+    "data-initial-variant-id": options.variantId || "11",
+  };
+  if (options.minMinor != null) {
+    slotAttrs["data-uni-min-price"] = String(options.minMinor);
+  }
+  if (options.prices != null) {
+    slotAttrs["data-uni-variant-prices"] = options.prices;
+  }
+  var slot = createEl("div", slotAttrs);
+  var variantInput = createEl("input", {
+    id: "product-variant-id",
+    name: "id",
+    type: "hidden",
+    value: options.variantId || "11",
+  });
+  form.appendChild(slot);
+  form.appendChild(variantInput);
+  wrap.appendChild(form);
+  installDom(wrap);
+  return { slot: slot, form: form, variantInput: variantInput };
+}
+
+/** Theme-style variant change: update the selected id, then dispatch change. */
+function chooseVariant(fixture, variantId) {
+  fixture.variantInput.value = String(variantId);
+  dispatchBubblingEvent(fixture.variantInput, "change");
+}
+
+function createCartSlot(minMinor) {
+  var attrs = {
+    id: "uni-cart-slot",
+    "data-uni-cart-button": "",
+    "data-unicid": "merchant-1",
+    "data-shop-domain": "shop.example",
+    "data-shop-permanent-domain": "shop.myshopify.com",
+  };
+  if (minMinor != null) attrs["data-uni-min-price"] = String(minMinor);
+  return createEl("div", attrs);
+}
+
+/** Counts transport entry: begin() is only reached when the gate allows CP. */
+function createTransportSpy() {
+  var calls = { begin: 0 };
+  return {
+    CP_BASE_URL: "https://cp.example",
+    CP_ORIGIN: "https://cp.example",
+    CP_URL: "https://cp.example/shopify/financing",
+    calls: calls,
+    shopifyRoot: function () {
+      return "/";
+    },
+    isConfigured: function () {
+      return true;
+    },
+    isActive: function () {
+      return false;
+    },
+    getFlow: function () {
+      return null;
+    },
+    begin: function () {
+      calls.begin += 1;
+      return true;
+    },
+    setIframe: function () {},
+    end: function () {
+      return true;
+    },
+    closeActive: function () {},
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Product fixtures                                                           */
+/* -------------------------------------------------------------------------- */
+
+function caseProductMinimumBoundaries() {
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":4999,"22":5000,"33":5001}',
+  });
+  var api = loadProductApi();
+  fixture.variantInput.value = "11";
+  assert.strictEqual(
+    api.syncSlotVisibility(fixture.slot),
+    false,
+    "49.99 < 50 → ineligible",
+  );
+  assert.strictEqual(fixture.slot.hidden, true, "49.99 < 50 → hidden");
+  fixture.variantInput.value = "22";
+  assert.strictEqual(
+    api.syncSlotVisibility(fixture.slot),
+    true,
+    "50.00 = 50 → eligible",
+  );
+  assert.strictEqual(fixture.slot.hidden, false, "50.00 = 50 → visible");
+  fixture.variantInput.value = "33";
+  assert.strictEqual(
+    api.syncSlotVisibility(fixture.slot),
+    true,
+    "50.01 > 50 → eligible",
+  );
+  assert.strictEqual(fixture.slot.hidden, false, "50.01 > 50 → visible");
+}
+
+function caseProductVariantTransition() {
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":6000,"22":4000}',
+  });
+  var api = loadProductApi();
+  api.bindVariantChange(fixture.slot);
+
+  assert.strictEqual(
+    api.syncSlotVisibility(fixture.slot),
+    true,
+    "60.00 → eligible at start",
+  );
+  assert.strictEqual(fixture.slot.hidden, false, "60.00 → visible at start");
+
+  chooseVariant(fixture, 22);
+  assert.strictEqual(
+    fixture.slot.hidden,
+    true,
+    "variant change to 40.00 → hidden",
+  );
+
+  chooseVariant(fixture, 11);
+  assert.strictEqual(
+    fixture.slot.hidden,
+    false,
+    "variant change back to 60.00 → visible again",
+  );
+}
+
+function caseProductPriceDataAndFallback() {
+  var api = loadProductApi();
+
+  [
+    { dataset: {} },
+    { dataset: null },
+    { dataset: { uniMinPrice: "" } },
+    { dataset: { uniMinPrice: "0" } },
+    { dataset: { uniMinPrice: "-10" } },
+    { dataset: { uniMinPrice: "49.5" } },
+    { dataset: { uniMinPrice: "abc" } },
+  ].forEach(function (container) {
+    assert.strictEqual(
+      api.resolveMinimumMinor(container),
+      5000,
+      "invalid/missing minimum → fallback 50",
+    );
+  });
+  assert.strictEqual(
+    api.resolveMinimumMinor({ dataset: { uniMinPrice: "100" } }),
+    100,
+    "Liquid-rendered 1 whole unit (100 minor) passes through",
+  );
+  assert.strictEqual(
+    api.resolveMinimumMinor({ dataset: { uniMinPrice: "25000" } }),
+    25000,
+    "Liquid-rendered 250 whole units (25000 minor) passes through",
+  );
+
+  var freeVariant = {
+    dataset: { uniMinPrice: "5000", uniVariantPrices: '{"11":0}' },
+  };
+  assert.strictEqual(
+    api.resolveVariantPriceMinor(freeVariant, 11),
+    0,
+    "free variant price resolves",
+  );
+  assert.strictEqual(
+    api.isPriceAboveMinimum(freeVariant, 11),
+    false,
+    "free variant is below any positive minimum",
+  );
+  assert.strictEqual(
+    api.resolveVariantPriceMinor(freeVariant, 99),
+    null,
+    "unknown variant price → null",
+  );
+
+  var noPriceData = { dataset: { uniMinPrice: "5000" } };
+  assert.strictEqual(
+    api.isPriceAboveMinimum(noPriceData, 123),
+    true,
+    "missing local price keeps pre-existing eligibility",
+  );
+  var badPriceData = {
+    dataset: { uniMinPrice: "5000", uniVariantPrices: "not json" },
+  };
+  assert.strictEqual(
+    api.isPriceAboveMinimum(badPriceData, 123),
+    true,
+    "unparsable local price keeps pre-existing eligibility",
+  );
+  assert.strictEqual(
+    api.isPriceAboveMinimum(freeVariant, null),
+    false,
+    "unresolved variant cannot be eligible",
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cart fixtures                                                              */
+/* -------------------------------------------------------------------------- */
+
+function caseCartMinimumBoundaries() {
+  installDom(createEl("div", {}));
+  var api = loadCartApi();
+  var slot = createCartSlot(5000);
+
+  assert.strictEqual(
+    api.isCartAboveMinimum(slot, { total_price: 4999 }),
+    false,
+    "cart 49.99 < 50 → ineligible",
+  );
+  assert.strictEqual(
+    api.isCartAboveMinimum(slot, { total_price: 5000 }),
+    true,
+    "cart 50.00 = 50 → eligible",
+  );
+  assert.strictEqual(
+    api.isCartAboveMinimum(slot, { total_price: 5001 }),
+    true,
+    "cart 50.01 > 50 → eligible",
+  );
+  assert.strictEqual(
+    api.isCartAboveMinimum(slot, { total_price: null }),
+    true,
+    "unknown cart amount keeps pre-existing eligibility",
+  );
+  assert.strictEqual(
+    api.isCartAboveMinimum(slot, null),
+    true,
+    "missing cart keeps pre-existing eligibility",
+  );
+  assert.strictEqual(
+    api.resolveMinimumMinor(createCartSlot(null)),
+    5000,
+    "missing cart minimum → fallback 50",
+  );
+  assert.strictEqual(
+    api.resolveMinimumMinor(createCartSlot("49.5")),
+    5000,
+    "invalid cart minimum → fallback 50",
+  );
+}
+
+/* Cart updates use the integration's real cart.js mechanism. */
+function stubCartFetch(getCart) {
+  sandbox.fetch = function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve(getCart());
+      },
+    });
+  };
+}
+
+function caseCartUpdateAcrossThreshold() {
+  installDom(createEl("div", {}));
+  var cart = {
+    token: "cart-token-1",
+    item_count: 1,
+    total_price: 4999,
+    currency: "BGN",
+    items: [{ key: "1:abc", quantity: 1, final_line_price: 4999 }],
+  };
+  stubCartFetch(function () {
+    return cart;
+  });
+  var api = loadCartApi();
+  var slot = createCartSlot(5000);
+
+  return api
+    .fetchStableCart()
+    .then(function (snapshot) {
+      assert.strictEqual(
+        api.isCartAboveMinimum(slot, snapshot),
+        false,
+        "cart 49.99 → below minimum",
+      );
+      // Quantity update raises the cart above the minimum.
+      cart = {
+        token: "cart-token-1",
+        item_count: 2,
+        total_price: 5001,
+        currency: "BGN",
+        items: [
+          { key: "1:abc", quantity: 1, final_line_price: 4999 },
+          { key: "2:def", quantity: 1, final_line_price: 2 },
+        ],
+      };
+      return api.fetchStableCart();
+    })
+    .then(function (snapshot) {
+      assert.strictEqual(
+        api.isCartAboveMinimum(slot, snapshot),
+        true,
+        "cart 50.01 → eligible again",
+      );
+      assert.strictEqual(
+        snapshot.token,
+        "cart-token-1",
+        "cart identity untouched by the gate",
+      );
+    });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Click-time safety: below minimum must never reach CP                       */
+/* -------------------------------------------------------------------------- */
+
+function caseProductClickGateBlocksCpRequest() {
+  var transportSpy = createTransportSpy();
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":4999,"22":6000}',
+    variantId: "11",
+  });
+  var api = loadProductApi(transportSpy);
+  api.bindVariantChange(fixture.slot);
+  var button = { disabled: false };
+
+  return api
+    .handleClick(fixture.slot, button)
+    .then(function () {
+      assert.strictEqual(
+        transportSpy.calls.begin,
+        0,
+        "variant below minimum → no CP request",
+      );
+      assert.strictEqual(
+        fixture.slot.hidden,
+        true,
+        "below-minimum slot hidden at click time",
+      );
+      chooseVariant(fixture, 22);
+      assert.strictEqual(
+        fixture.slot.hidden,
+        false,
+        "variant change restores visibility",
+      );
+      return api.handleClick(fixture.slot, button);
+    })
+    .then(function () {
+      // The mock DOM cannot complete the modal, so begin() is the CP boundary.
+      assert.ok(
+        transportSpy.calls.begin >= 1,
+        "eligible variant reaches CP transport",
+      );
+      assert.strictEqual(
+        button.disabled,
+        false,
+        "button re-enabled after the attempt",
+      );
+    });
+}
+
+function caseCartClickGateBlocksCpRequest() {
+  installDom(createEl("div", {}));
+  var cart = {
+    token: "cart-token-1",
+    item_count: 1,
+    total_price: 4999,
+    items: [{ key: "1:abc", quantity: 1, final_line_price: 4999 }],
+  };
+  stubCartFetch(function () {
+    return cart;
+  });
+  var transportSpy = createTransportSpy();
+  var api = loadCartApi(transportSpy);
+  var slot = createCartSlot(5000);
+  var button = { disabled: false };
+
+  return api
+    .handleClick(slot, button)
+    .then(function () {
+      assert.strictEqual(
+        transportSpy.calls.begin,
+        0,
+        "cart below minimum → no CP request",
+      );
+      assert.strictEqual(
+        slot.hidden,
+        true,
+        "stale below-minimum cart slot hidden at click time",
+      );
+      // Cart grows through the same cart.js path the integration already uses.
+      cart = {
+        token: "cart-token-1",
+        item_count: 1,
+        total_price: 6000,
+        items: [{ key: "1:abc", quantity: 1, final_line_price: 6000 }],
+      };
+      return api.handleClick(slot, button);
+    })
+    .then(function () {
+      assert.ok(
+        transportSpy.calls.begin >= 1,
+        "cart at/above minimum reaches CP transport",
+      );
+      assert.strictEqual(
+        button.disabled,
+        false,
+        "button re-enabled after the attempt",
+      );
+    });
+}
+
+caseProductMinimumBoundaries();
+caseProductVariantTransition();
+caseProductPriceDataAndFallback();
+caseCartMinimumBoundaries();
+
+async function runAsyncThresholdChecks() {
+  await caseCartUpdateAcrossThreshold();
+  await caseProductClickGateBlocksCpRequest();
+  await caseCartClickGateBlocksCpRequest();
+}
+
+runAsyncThresholdChecks().then(
+  function () {
+    console.log("check-uni-hardening: OK");
+  },
+  function (error) {
+    console.error(error && error.stack ? error.stack : error);
+    process.exitCode = 1;
+  },
+);
