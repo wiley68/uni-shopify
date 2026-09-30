@@ -24,6 +24,15 @@ no financing price calculation or Product catalog lookup.
 F02-5 subsequently moved Cart to its own six-field v2 capability contract. That
 later Cart change does not alter this Product contract.
 
+The Product button is shown only for exact EUR buyer presentment from
+`localization.country.currency.iso_code` at initial render. Before POST, the
+theme checks a fresh locale-aware `/cart.js` `cart.currency` for exact `EUR`;
+an unavailable or noncanonical value hides the slot without POST. The Product
+probe reads only presentment currency, so an empty cart is valid. The local
+currency attribute is also rechecked, but neither currency is included in the
+payload. CP separately requires exact `EUR` in authoritative Storefront
+`MoneyV2.currencyCode`.
+
 ## Runtime verification
 
 On a Product page, select a variant and quantity, open financing, and confirm

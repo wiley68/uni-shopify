@@ -48,15 +48,22 @@
    * Local minimum gate on the current cart amount. Uses the cart.js
    * total_price already fetched by fetchStableCart() — same minor-unit field
    * Liquid renders for the initial hidden state, not a second cart total.
-   * An unavailable amount keeps the pre-existing eligibility behavior.
+   * An unavailable amount is ineligible.
    */
   function isCartAboveMinimum(container, cart) {
     var total =
       cart && typeof cart === "object"
         ? nonNegativeInteger(cart.total_price)
         : null;
-    if (total == null) return true;
+    if (total == null) return false;
     return total >= resolveMinimumMinor(container);
+  }
+
+  function isCartEligible(container, cart) {
+    if (!cart || cart.currency !== "EUR") return false;
+    if (!Array.isArray(cart.items) || cart.items.length === 0) return false;
+    if (positiveInteger(cart.item_count) == null) return false;
+    return isCartAboveMinimum(container, cart);
   }
 
   /**
@@ -254,7 +261,7 @@
     for (var i = 0; i < cartWatch.containers.length; i++) {
       var container = cartWatch.containers[i];
       if (!container || container.isConnected === false) continue;
-      container.hidden = !isCartAboveMinimum(container, cart);
+      container.hidden = !isCartEligible(container, cart);
     }
   }
 
@@ -449,15 +456,18 @@
       }
 
       var cart = await fetchStableCart();
-      var payload = buildPayload(container, cart);
-
-      if (!payload.shop_permanent_domain) throw new Error("invalid-context");
-
-      // Local minimum gate: a cart below uni_min_price never reaches CP.
-      if (!isCartAboveMinimum(container, cart)) {
+      if (!cart || cart.currency !== "EUR") {
         container.hidden = true;
         return;
       }
+      // Cart must be non-empty and have a valid EUR total above the minimum.
+      if (!isCartEligible(container, cart)) {
+        container.hidden = true;
+        return;
+      }
+      var payload = buildPayload(container, cart);
+
+      if (!payload.shop_permanent_domain) throw new Error("invalid-context");
 
       // Same authoritative snapshot also refreshes visibility that the scoped
       // watcher may have missed, and re-arms the watcher if the theme replaced

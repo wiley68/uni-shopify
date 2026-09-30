@@ -4,7 +4,7 @@
 {% endcomment %}
 
 {% assign uni_unicid = settings.uni_unicid | strip %}
-{% if settings.uni_status and uni_unicid != blank and product != blank %}
+{% if settings.uni_status and uni_unicid != blank and product != blank and localization.country.currency.iso_code == 'EUR' %}
   {% assign uni_btn_text = settings.uni_btn_text | strip %}
   {% if uni_btn_text == blank %}
     {% assign uni_btn_text = 'Купи на изплащане' %}
@@ -14,7 +14,7 @@
     Local financing minimum (uni_min_price): whole major units, default 50.
     Shopify "number" settings cannot enforce positive integers, so invalid
     configuration falls back to 50 here and again in uni-product-button.js.
-    Shopify money values are minor units (1/100 for BGN/EUR), so the
+    Eligible EUR money values are minor units (1/100), so the
     threshold is converted once and every later comparison is integer.
     Product amount = selected variant price x selected quantity. Liquid cannot
     read the theme's initial quantity, so this server-rendered state assumes
@@ -39,6 +39,7 @@
   <div
     class="uni-product-slot"
     data-uni-product-button
+    data-uni-currency="{{ localization.country.currency.iso_code | escape }}"
     data-unicid="{{ uni_unicid | escape }}"
     data-initial-variant-id="{{ product.selected_or_first_available_variant.id }}"
     data-uni-min-price="{{ uni_min_minor }}"

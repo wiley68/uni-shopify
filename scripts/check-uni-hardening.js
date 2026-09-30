@@ -87,6 +87,10 @@ var cartPayloadBuilder = cartJs.slice(
   cartJs.indexOf("function buildPayload"),
   cartJs.indexOf("function showError"),
 );
+var productPayloadBuilder = productJs.slice(
+  productJs.indexOf("function buildPayload"),
+  productJs.indexOf("function showError"),
+);
 var productLiquid = fs.readFileSync(
   path.join(root, "snippets", "uni-product-button.liquid"),
   "utf8",
@@ -141,7 +145,7 @@ assert.strictEqual(
   "products",
 ].forEach(function (field) {
   assert.strictEqual(
-    productJs.indexOf(field),
+    productPayloadBuilder.indexOf(field),
     -1,
     "Product v2 must not contain authority field: " + field,
   );
@@ -631,6 +635,9 @@ function matchesSimple(el, selector) {
   }
   if (selector === "[data-uni-product-button]") {
     return el.attrs["data-uni-product-button"] != null;
+  }
+  if (selector === ".uni-product-error") {
+    return (el.attrs.class || "").split(/\s+/).indexOf("uni-product-error") !== -1;
   }
   return false;
 }
@@ -1378,6 +1385,18 @@ assert.ok(
   "product slot carries locally rendered variant prices",
 );
 assert.ok(
+  productLiquid.indexOf("localization.country.currency.iso_code == 'EUR'") !==
+    -1 &&
+    productLiquid.indexOf(
+      'data-uni-currency="{{ localization.country.currency.iso_code | escape }}"',
+    ) !== -1,
+  "Product Liquid uses exact presentment EUR and exposes local currency",
+);
+assert.ok(
+  cartLiquid.indexOf("cart.currency.iso_code == 'EUR'") !== -1,
+  "Cart Liquid uses exact cart presentment EUR",
+);
+assert.ok(
   productLiquid.indexOf("hidden") !== -1 && cartLiquid.indexOf("hidden") !== -1,
   "server-rendered initial hidden gate",
 );
@@ -1558,7 +1577,7 @@ assert.ok(
     cStart,
     cartJs.indexOf("function initialize", cStart),
   );
-  var cGate = cBody.indexOf("isCartAboveMinimum");
+  var cGate = cBody.indexOf("isCartEligible");
   var cPost = cBody.indexOf("postToIframe");
   assert.ok(
     cGate !== -1 && cPost !== -1 && cGate < cPost,
@@ -1566,14 +1585,15 @@ assert.ok(
   );
 })();
 
-var productPayloadBuilder = productJs.slice(
-  productJs.indexOf("function buildPayload"),
-  productJs.indexOf("function showError"),
-);
 assert.ok(
   productPayloadBuilder.indexOf("MinPrice") === -1 &&
     cartPayloadBuilder.indexOf("MinPrice") === -1,
   "minimum gate is never part of the CP payload",
+);
+assert.ok(
+  !/\bcurrency\s*:/.test(productPayloadBuilder) &&
+    !/\bcurrency\s*:/.test(cartPayloadBuilder),
+  "browser currency is absent from both payload builders",
 );
 
 /* -------------------------------------------------------------------------- */
@@ -1607,6 +1627,10 @@ function createProductFixture(options) {
     "data-shop-permanent-domain": "shop.myshopify.com",
     "data-initial-variant-id": options.variantId || "11",
   };
+  if (options.currency !== null) {
+    slotAttrs["data-uni-currency"] =
+      options.currency === undefined ? "EUR" : options.currency;
+  }
   if (options.minMinor != null) {
     slotAttrs["data-uni-min-price"] = String(options.minMinor);
   }
@@ -1614,6 +1638,8 @@ function createProductFixture(options) {
     slotAttrs["data-uni-variant-prices"] = options.prices;
   }
   var slot = createEl("div", slotAttrs);
+  var error = createEl("p", { class: "uni-product-error", hidden: true });
+  slot.appendChild(error);
   var variantInput = createEl("input", {
     id: "product-variant-id",
     name: "id",
@@ -1636,6 +1662,7 @@ function createProductFixture(options) {
   installDom(wrap);
   return {
     slot: slot,
+    error: error,
     form: form,
     variantInput: variantInput,
     quantityInput: quantityInput,
@@ -2013,6 +2040,7 @@ function caseProductTwoSlotsStayIndependent() {
       id: "slot-" + letter,
       "data-uni-product-button": "",
       "data-unicid": "merchant-1",
+      "data-uni-currency": "EUR",
       "data-shop-domain": "shop.example",
       "data-shop-permanent-domain": "shop.myshopify.com",
       "data-uni-min-price": "5000",
@@ -2231,13 +2259,13 @@ function caseCartMinimumBoundaries() {
   );
   assert.strictEqual(
     api.isCartAboveMinimum(slot, { total_price: null }),
-    true,
-    "unknown cart amount keeps pre-existing eligibility",
+    false,
+    "unknown cart amount is ineligible",
   );
   assert.strictEqual(
     api.isCartAboveMinimum(slot, null),
-    true,
-    "missing cart keeps pre-existing eligibility",
+    false,
+    "missing cart is ineligible",
   );
   assert.strictEqual(
     api.resolveMinimumMinor(createCartSlot(null)),
@@ -2258,13 +2286,13 @@ function caseCartInitialStateFromLiquid() {
   api.ensureCartObservation(fixture.slot);
 
   fixture.slot.hidden = true; // Liquid rendered a below-minimum cart
-  api.applyCartVisibility({ total_price: 6000 });
+  api.applyCartVisibility(cartSnapshot(6000, 1));
   assert.strictEqual(
     fixture.slot.hidden,
     false,
     "initial below minimum → above becomes visible",
   );
-  api.applyCartVisibility({ total_price: 4999 });
+  api.applyCartVisibility(cartSnapshot(4999, 1));
   assert.strictEqual(
     fixture.slot.hidden,
     true,
@@ -2272,7 +2300,7 @@ function caseCartInitialStateFromLiquid() {
   );
 
   fixture.slot.hidden = false; // Liquid rendered an at/above-minimum cart
-  api.applyCartVisibility({ total_price: 4999 });
+  api.applyCartVisibility(cartSnapshot(4999, 1));
   assert.strictEqual(
     fixture.slot.hidden,
     true,
@@ -2392,12 +2420,12 @@ function caseCartUpdateAcrossThreshold() {
     });
 }
 
-function cartSnapshot(totalPrice, quantity) {
+function cartSnapshot(totalPrice, quantity, currency) {
   return {
     token: "cart-token-1",
     item_count: quantity,
     total_price: totalPrice,
-    currency: "BGN",
+    currency: currency === undefined ? "EUR" : currency,
     items: [{ key: "1:abc", quantity: quantity, final_line_price: totalPrice }],
   };
 }
@@ -2446,6 +2474,26 @@ function caseCartDynamicVisibility() {
         "childList + subtree only — never attributes (no hidden-toggle loop)",
       );
 
+      cart = cartSnapshot(6000, 2, "BGN");
+      triggerCartRedraw(observerStub);
+      return settle();
+    })
+    .then(function () {
+      assert.strictEqual(
+        fixture.slot.hidden,
+        true,
+        "EUR to BGN hides the Cart slot",
+      );
+      cart = cartSnapshot(6000, 2, "EUR");
+      dispatchBubblingEvent(fixture.quantity, "change");
+      return settle();
+    })
+    .then(function () {
+      assert.strictEqual(
+        fixture.slot.hidden,
+        false,
+        "BGN to EUR restores an eligible Cart slot",
+      );
       // Cart quantity lowered back to 40 → scoped Cart control event.
       cart = cartSnapshot(4000, 1);
       dispatchBubblingEvent(fixture.quantity, "change");
@@ -2615,7 +2663,53 @@ function caseCartRefreshFailureIsSafe() {
 /* Click-time safety: below minimum must never reach CP                       */
 /* -------------------------------------------------------------------------- */
 
+async function caseProductCurrencyGate() {
+  var transportSpy = createTransportSpy();
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":6000}',
+    quantity: 1,
+  });
+  var api = loadProductApi(transportSpy);
+  var button = { disabled: false };
+  assert.strictEqual(
+    api.syncSlotVisibility(fixture.slot),
+    true,
+    "EUR Product is visible above minimum",
+  );
+
+  for (var currency of ["BGN", "USD", "eur", " EUR", "EUR ", "EURO", ""]) {
+    fixture.slot.attrs["data-uni-currency"] = currency;
+    assert.strictEqual(
+      api.syncSlotVisibility(fixture.slot),
+      false,
+      currency + " Product is hidden",
+    );
+    await api.handleClick(fixture.slot, button);
+    assert.strictEqual(
+      transportSpy.calls.begin,
+      0,
+      currency + " Product never reaches CP",
+    );
+  }
+  delete fixture.slot.attrs["data-uni-currency"];
+  assert.strictEqual(api.syncSlotVisibility(fixture.slot), false, "missing Product currency is hidden");
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(transportSpy.calls.begin, 0, "missing Product currency never reaches CP");
+
+  fixture.slot.attrs["data-uni-currency"] = "EUR";
+  assert.strictEqual(api.syncSlotVisibility(fixture.slot), true, "EUR restores Product visibility");
+  fixture.slot.attrs["data-uni-currency"] = "BGN"; // stale visible DOM without change event
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(fixture.slot.hidden, true, "stale Product slot hides at click");
+  assert.strictEqual(transportSpy.calls.begin, 0, "stale Product click never reaches CP");
+  assert.strictEqual(button.disabled, false, "blocked Product button is re-enabled");
+}
+
 function caseProductClickGateBlocksCpRequest() {
+  stubCartFetch(function () {
+    return { currency: "EUR", item_count: 0, items: [] };
+  });
   var transportSpy = createTransportSpy();
   var fixture = createProductFixture({
     minMinor: 5000,
@@ -2729,6 +2823,161 @@ function caseCartClickGateBlocksCpRequest() {
     });
 }
 
+async function caseProductFreshPresentmentGate() {
+  var freshCurrency = "BGN";
+  var requests = [];
+  sandbox.fetch = function (url, options) {
+    requests.push({ url: url, options: options });
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve({ currency: freshCurrency });
+      },
+    });
+  };
+  var transportSpy = createTransportSpy();
+  transportSpy.shopifyRoot = function () {
+    return "/en-bg/";
+  };
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":6000}',
+    quantity: 1,
+  });
+  var api = loadProductApi(transportSpy);
+  var button = { disabled: false };
+  assert.strictEqual(api.syncSlotVisibility(fixture.slot), true);
+
+  for (var currency of ["BGN", "USD", "eur", " EUR ", "", null]) {
+    freshCurrency = currency;
+    fixture.slot.hidden = false; // Liquid still says EUR after an AJAX market change
+    await api.handleClick(fixture.slot, button);
+    assert.strictEqual(fixture.slot.hidden, true, String(currency) + " fresh Product currency hides slot");
+    assert.strictEqual(transportSpy.calls.begin, 0, String(currency) + " fresh Product currency blocks transport");
+    assert.strictEqual(fixture.error.hidden, true, "non-EUR remains silent");
+    assert.strictEqual(button.disabled, false);
+  }
+  freshCurrency = undefined;
+  fixture.slot.hidden = false;
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(fixture.slot.hidden, true, "missing fresh currency hides Product slot");
+  assert.strictEqual(transportSpy.calls.begin, 0);
+  assert.strictEqual(fixture.error.hidden, true, "missing currency remains silent");
+  assert.ok(requests.every(function (request) {
+    return request.url === "/en-bg/cart.js" &&
+      request.options.credentials === "same-origin" &&
+      request.options.headers.Accept === "application/json";
+  }), "Product uses a read-only locale-aware cart.js request");
+
+  sandbox.fetch = function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve({ currency: "EUR", item_count: 0, items: [], total_price: 0 });
+      },
+    });
+  };
+  fixture.slot.hidden = false;
+  await api.handleClick(fixture.slot, button);
+  assert.ok(transportSpy.calls.begin >= 1, "fresh EUR permits Product transport with an empty cart");
+}
+
+async function caseProductFreshPresentmentFailures() {
+  var transportSpy = createTransportSpy();
+  var fixture = createProductFixture({
+    minMinor: 5000,
+    prices: '{"11":6000}',
+    quantity: 1,
+  });
+  var api = loadProductApi(transportSpy);
+  var button = { disabled: false };
+  var failures = [
+    { label: "network failure", fetch: function () { return Promise.reject(new Error("offline")); } },
+    { label: "non-OK response", fetch: function () { return Promise.resolve({ ok: false }); } },
+    { label: "malformed JSON", fetch: function () { return Promise.resolve({ ok: true, json: function () { throw new Error("bad-json"); } }); } },
+  ];
+  for (var failure of failures) {
+    sandbox.fetch = failure.fetch;
+    fixture.slot.hidden = false;
+    await api.handleClick(fixture.slot, button);
+    assert.strictEqual(fixture.slot.hidden, true, failure.label + " hides Product slot");
+    assert.strictEqual(transportSpy.calls.begin, 0, failure.label + " blocks Product transport");
+    assert.strictEqual(fixture.error.hidden, true, failure.label + " remains silent");
+    assert.strictEqual(button.disabled, false);
+  }
+}
+
+async function caseProductProbeRetainsClickLock() {
+  var release;
+  var fetches = 0;
+  sandbox.fetch = function () {
+    fetches += 1;
+    return new Promise(function (resolve) { release = resolve; });
+  };
+  var transportSpy = createTransportSpy();
+  var fixture = createProductFixture({ minMinor: 5000, prices: '{"11":6000}', quantity: 1 });
+  var api = loadProductApi(transportSpy);
+  var button = { disabled: false };
+  var first = api.handleClick(fixture.slot, button);
+  var second = api.handleClick(fixture.slot, button);
+  assert.strictEqual(fetches, 1, "double click starts one currency probe");
+  release({ ok: true, json: function () { return Promise.resolve({ currency: "BGN" }); } });
+  await Promise.all([first, second]);
+  assert.strictEqual(transportSpy.calls.begin, 0, "double click cannot bypass blocked currency");
+  assert.strictEqual(button.disabled, false);
+}
+
+async function caseCartCurrencyGate() {
+  var cart = cartSnapshot(6000, 2, "EUR");
+  stubCartFetch(function () {
+    return cart;
+  });
+  var transportSpy = createTransportSpy();
+  var fixture = createCartFixture(5000);
+  var api = loadCartApi(transportSpy);
+  var button = { disabled: false };
+  api.ensureCartObservation(fixture.slot);
+  api.applyCartVisibility(cart);
+  assert.strictEqual(fixture.slot.hidden, false, "EUR Cart above minimum is visible");
+
+  for (var currency of ["BGN", "USD", "eur", " EUR", "EUR ", "EURO", "", null]) {
+    cart = cartSnapshot(6000, 2, currency);
+    api.applyCartVisibility(cart);
+    assert.strictEqual(fixture.slot.hidden, true, String(currency) + " Cart is hidden");
+    fixture.slot.hidden = false; // stale rendered slot at click time
+    await api.handleClick(fixture.slot, button);
+    assert.strictEqual(fixture.slot.hidden, true, String(currency) + " stale Cart hides at click");
+    assert.strictEqual(transportSpy.calls.begin, 0, String(currency) + " Cart never reaches CP");
+  }
+  cart = cartSnapshot(6000, 2, "EUR");
+  delete cart.currency;
+  api.applyCartVisibility(cart);
+  assert.strictEqual(fixture.slot.hidden, true, "missing Cart currency is hidden");
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(transportSpy.calls.begin, 0, "missing Cart currency never reaches CP");
+
+  cart = cartSnapshot(6000, 0, "EUR");
+  cart.items = [];
+  api.applyCartVisibility(cart);
+  assert.strictEqual(fixture.slot.hidden, true, "empty EUR Cart is hidden");
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(transportSpy.calls.begin, 0, "empty EUR Cart never reaches CP");
+
+  cart = cartSnapshot(null, 1, "EUR");
+  api.applyCartVisibility(cart);
+  assert.strictEqual(fixture.slot.hidden, true, "invalid EUR Cart total is hidden");
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(transportSpy.calls.begin, 0, "invalid EUR Cart total never reaches CP");
+
+  cart = cartSnapshot(6000, 2, "EUR");
+  api.applyCartVisibility(cart);
+  assert.strictEqual(fixture.slot.hidden, false, "EUR Cart visibility is restored");
+  cart = cartSnapshot(6000, 2, "BGN"); // currency changed since render
+  await api.handleClick(fixture.slot, button);
+  assert.strictEqual(fixture.slot.hidden, true, "latest stable BGN Cart hides stale slot");
+  assert.strictEqual(transportSpy.calls.begin, 0, "latest stable BGN Cart blocks POST");
+}
+
 caseProductMinimumBoundaries();
 caseProductAmountBoundaries();
 caseProductVariantAndQuantityTransitions();
@@ -2746,8 +2995,13 @@ async function runAsyncThresholdChecks() {
   await caseCartNoDuplicateObservation();
   await caseCartCoalescedRechecks();
   await caseCartRefreshFailureIsSafe();
+  await caseProductCurrencyGate();
+  await caseProductFreshPresentmentGate();
+  await caseProductFreshPresentmentFailures();
+  await caseProductProbeRetainsClickLock();
   await caseProductClickGateBlocksCpRequest();
   await caseCartClickGateBlocksCpRequest();
+  await caseCartCurrencyGate();
 }
 
 runAsyncThresholdChecks().then(

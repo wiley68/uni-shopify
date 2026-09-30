@@ -423,11 +423,15 @@
   }
 
   /**
-   * Keep the slot visible only while the current product amount (variant
-   * price × quantity) passes the local minimum. The server-rendered hidden
-   * state is the initial value; this only re-syncs the same slot in place.
+   * Keep the slot visible only for exact EUR presentment while the current
+   * product amount (variant price × quantity) passes the local minimum. The
+   * server-rendered hidden state is the initial value; this re-syncs in place.
    */
   function syncSlotVisibility(container) {
+    if (container.dataset.uniCurrency !== "EUR") {
+      container.hidden = true;
+      return false;
+    }
     var variantId = resolveVariantId(container);
     var quantity = resolveVisibilityQuantity(container);
     var eligible = variantId
@@ -435,6 +439,21 @@
       : true;
     container.hidden = !eligible;
     return eligible;
+  }
+
+  /** Fresh, read-only presentment proof; cart contents are irrelevant to Product. */
+  async function hasCurrentEuroPresentment() {
+    try {
+      var response = await fetch(transport.shopifyRoot() + "cart.js", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) return false;
+      var cart = await response.json();
+      return !!cart && !Array.isArray(cart) && cart.currency === "EUR";
+    } catch (_error) {
+      return false;
+    }
   }
 
   /**
@@ -626,6 +645,10 @@
     clearError(container);
 
     try {
+      if (container.dataset.uniCurrency !== "EUR") {
+        container.hidden = true;
+        return;
+      }
       var unicid = (container.dataset.unicid || "").trim();
       if (!unicid) {
         showError(
@@ -652,6 +675,15 @@
         return;
       }
 
+      if (!(await hasCurrentEuroPresentment())) {
+        container.hidden = true;
+        return;
+      }
+      if (container.dataset.uniCurrency !== "EUR") {
+        container.hidden = true;
+        return;
+      }
+      if (transport.isActive()) return;
       postToIframe(payload);
     } catch (_error) {
       showError(
@@ -668,7 +700,6 @@
     document
       .querySelectorAll("[data-uni-product-button]")
       .forEach(function (container) {
-        if (container.dataset.uniInitialized === "true") return;
         var button = container.querySelector(".uni-product-button");
         if (!(button instanceof HTMLButtonElement)) return;
         if (container.dataset.uniInitialized !== "true") {

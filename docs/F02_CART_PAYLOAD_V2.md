@@ -25,6 +25,12 @@ product, quantity, price, total, and currency serialization have been removed.
 CP reconstructs lines, quantities, catalog metadata, collections, final money,
 currency, and frozen context authoritatively through Storefront Cart lookup.
 
+The Cart button initially renders only when Liquid `cart.currency.iso_code` is
+exactly `EUR`. Dynamic visibility and click-time eligibility use exact
+`cart.currency === "EUR"` from a stable `/cart.js` snapshot, plus a non-empty
+cart and the EUR minimum. Browser currency stays out of this payload; CP
+independently requires exact EUR in authoritative Storefront MoneyV2.
+
 ## Cart identity contract
 
 `cart_identity` is the unmodified `cart.token` from the final stable `/cart.js`

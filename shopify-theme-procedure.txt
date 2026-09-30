@@ -20,7 +20,8 @@ collections, money, and currency authoritatively through Storefront Cart lookup.
 Trust boundary:
   ALL frontend fields are UNTRUSTED.
   CP must validate every field server-side.
-  Domains/unicid/currency/money are public context, not authentication.
+  Domains/unicid are public context, not authentication. Browser currency and
+  money are not sent in payload v2.
 
 ================================================================================
 Local financing minimum (uni_min_price) - local eligibility gate
@@ -29,18 +30,25 @@ Local financing minimum (uni_min_price) - local eligibility gate
 Theme setting (canonical UniCredit settings block in step 5 below):
   id: uni_min_price   type: number   default: 50
 
-Unit: whole major units of the store currency. Shopify money values
+Unit: whole EUR major units when financing is eligible. Shopify money values
 (variant price, Liquid cart.total_price, cart.js total_price) are minor units
-(1/100 for the supported currencies), so the threshold is compared as
+(1/100 for EUR), so the threshold is compared as
 uni_min_price x 100. All comparisons are integer comparisons.
 
 Local gate (decided in the browser, before any CP request):
+  Product: localization.country.currency.iso_code must be exactly EUR for
+           initial render. At click, fresh locale-aware cart.js currency must
+           also be exactly EUR; cart contents are not Product authority.
+  Cart: Liquid cart.currency.iso_code is the initial gate; /cart.js
+        cart.currency must be exactly EUR at runtime and click time.
+  Non-EUR or missing/malformed currency hides the button without an error.
+  Cart must also be non-empty with a valid total.
   product amount = selected variant price x selected quantity
   product amount < uni_min_price  -> button hidden, no CP POST
   cart total     < uni_min_price  -> button hidden, no CP POST
   amount >= uni_min_price         -> existing eligibility continues
 
-Dynamic visibility (slots stay in the DOM; only the hidden attribute toggles):
+Dynamic visibility (rendered slots stay in the DOM; only hidden toggles):
   Product: scoped change/input on the resolved add-to-cart form (or theme
            section) plus the one resolved quantity control, so variant and
            quantity changes both re-sync. Quantity without a usable control
@@ -50,8 +58,12 @@ Dynamic visibility (slots stay in the DOM; only the hidden attribute toggles):
            on the resolved Cart form, else the theme section, plus that scope's
            own change/input/submit events. Bursts are coalesced into a single
            fetchStableCart() read. No document-level observation, no polling.
-  Click-time minimum checks (product price x quantity, cart total) are
-  unchanged and remain the final local guard before any CP request.
+  Click-time currency and minimum checks remain local guards before any CP
+  request. Product checks its slot and fetches fresh locale-aware /cart.js
+  currency; Cart reads a fresh stable /cart.js snapshot. If Product cannot
+  prove fresh EUR, it hides without POST. Neither sends browser currency to CP.
+  Arbitrary third-party AJAX market changes need not instantly update an old
+  Product slot; the Product click check contains stale EUR slot state.
 
 Shopify "number" settings cannot enforce positive integers, so the value is
 validated defensively in Liquid and again in JS: missing, zero, negative,
@@ -92,10 +104,14 @@ Product quantity follows this policy:
   - findProductForm() only disambiguates when multiple candidates exist
   - hidden/stale duplicates are dropped when a presented control exists
   - never arbitrary first match across multiple product contexts
-Product price/ownership uses Ajax APIs; variant id prefers form[name=id].
+Product price/ownership is reconstructed by CP from Storefront authority;
+the theme's local variant price map serves only the minimum gate. Variant id
+prefers form[name=id].
 
-Product currency and pricing are reconstructed by CP. Cart currency, discounts,
-line totals, and final total are reconstructed by CP from Storefront authority.
+The theme controls current buyer EUR visibility. CP independently reconstructs
+Product and Cart currency/pricing from authoritative Storefront MoneyV2 and
+requires raw currencyCode exactly EUR. Product uses the configured financing
+country in its Storefront query; browser market is not CP authority.
 
 Modal lifecycle:
   Product and Cart share one page-level active Uni flow (window.__UniTransport).
@@ -149,15 +165,16 @@ FILES
 snippets/
   uni-product-button.liquid
     - Custom Liquid (product page): {% render 'uni-product-button', product: product %}
-    - requires settings.uni_status + settings.uni_unicid + product
-    - embeds data-uni-collection-ids from product.collections (numeric IDs)
+    - requires settings.uni_status + settings.uni_unicid + product + exact EUR presentment
+    - exposes localization.country.currency.iso_code as local data-uni-currency
     - embeds data-uni-min-price + data-uni-variant-prices for the local minimum gate
+    - click checks fresh locale-aware cart.js currency without using Cart contents
   uni-cart-button.liquid
     - Custom Liquid (cart page): {% render 'uni-cart-button' %}
-    - requires settings.uni_status + settings.uni_unicid
+    - requires settings.uni_status + settings.uni_unicid + exact EUR cart.currency.iso_code
     - Liquid cart is NOT authoritative; JS uses cart.js on click
     - embeds data-uni-min-price; cart.js (fetchStableCart) drives both the
-      click-time and the dynamic minimum checks
+      click-time and the dynamic currency, non-empty, and minimum checks
 
 assets/
   uni-transport.js
@@ -303,14 +320,18 @@ No CP calculator / SmartUCF / order creation in theme.
    [ ] variant + quantity resolve via platform/generic selectors (not Dawn-only)
    [ ] quantity matches visible UI; multi-product pages do not pick arbitrary qty
    [ ] wrong-product variant cannot POST
-   [ ] currency is presentment (matches Ajax amounts), not blind shop.currency
-   [ ] products[].collection_ids present (array; may be empty)
-   [ ] echo: source=product, products[1], total_price_cents
+   [ ] Product slot exists only for exact EUR localization presentment
+   [ ] stale EUR slot + fresh non-EUR cart.js currency hides without POST
+   [ ] fresh EUR cart.js currency permits Product with an empty cart
+   [ ] POST contains only the seven Product payload v2 fields
+   [ ] no browser currency, collections, price, total or cart identity sent
    [ ] uni_min_price gate: variant price x quantity below minimum -> hidden, no POST
    [ ] quantity/variant change re-syncs button visibility without page reload
 
    Cart runtime:
    [ ] cart.js is source of truth (after quantity Ajax updates)
+   [ ] cart.currency is exact EUR for visibility and latest stable click snapshot
+   [ ] EUR -> non-EUR hides; non-EUR -> eligible EUR shows without reload
    [ ] final stable cart.js snapshot supplies the unmodified cart.token
    [ ] POST contains only the six Cart payload v2 fields
    [ ] empty cart → no POST

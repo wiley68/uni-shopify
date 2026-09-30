@@ -5,7 +5,7 @@
 {% endcomment %}
 
 {% assign uni_unicid = settings.uni_unicid | strip %}
-{% if settings.uni_status and uni_unicid != blank %}
+{% if settings.uni_status and uni_unicid != blank and cart.currency.iso_code == 'EUR' %}
   {% assign uni_btn_text = settings.uni_btn_text | strip %}
   {% if uni_btn_text == blank %}
     {% assign uni_btn_text = 'Купи на изплащане' %}
@@ -16,7 +16,7 @@
     Shopify "number" settings cannot enforce positive integers, so invalid
     configuration falls back to 50 here and again in uni-cart-button.js.
     Liquid cart.total_price and cart.js total_price are the same minor-unit
-    amount (1/100 for BGN/EUR), so the threshold is converted once.
+    EUR amount (1/100), so the threshold is converted once.
   {%- endcomment -%}
   {%- assign uni_min_major = settings.uni_min_price | plus: 0 -%}
   {%- assign uni_min_whole = uni_min_major | floor -%}
