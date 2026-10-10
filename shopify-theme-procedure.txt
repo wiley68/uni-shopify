@@ -136,6 +136,25 @@ Modal lifecycle:
   restores scroll, releases Product/Cart lock. Re-open starts a fresh attempt.
 
 ================================================================================
+INSTALLER PACKAGING (local only)
+================================================================================
+
+Canonical module version: UNI_VERSION in assets/uni-transport.js.
+From the repository root (Windows PowerShell 5.1 or PowerShell 7):
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1
+The execution-policy flag applies only to this process, not machine settings.
+Creates dist/spf_uni_<version>.zip and verifies it against source bytes.
+Contents: the six assets/* files, two snippets/* files, .shopifyignore,
+and shopify-theme-procedure.txt, directly at the archive root (no wrapper).
+The explicit manifest in scripts/package.ps1 must be updated if runtime files
+are added/removed. Entries are sorted with fixed timestamps/attributes;
+unchanged inputs produce byte-identical ZIPs with the same .NET runtime.
+dist/ is excluded from Git and Shopify uploads. No upload/deployment occurs.
+Verify existing: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -VerifyOnly
+Packaging checks: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-package.ps1
+Runtime checks: node scripts/check-uni-hardening.js
+
+================================================================================
 CP BASE URL — SINGLE SOURCE OF TRUTH (deployment packaging)
 ================================================================================
 

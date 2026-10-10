@@ -21,6 +21,7 @@ desktop.ini
 
 # Local development tooling (not theme runtime)
 scripts/
+dist/
 
 # Repository documentation (not theme runtime)
 shopify-theme-procedure.txt

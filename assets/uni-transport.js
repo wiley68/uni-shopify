@@ -12,6 +12,9 @@
   var KEY = "__UniTransport";
   if (global[KEY]) return;
 
+  // Canonical module release version (read by the installer packaging script).
+  var UNI_VERSION = "2.0.3";
+
   // =============================================================================
   // ENVIRONMENT PACKAGE SWITCH — change ONLY this value for DEV / TEST / PRODUCTION
   // DEV:        https://uni.avalonbg.com
